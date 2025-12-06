@@ -17,24 +17,20 @@ impl<'a> Scanner<'a> {
     }
 
     pub fn peek(&self) -> Option<char> {
-        let end = self.input.ceil_char_boundary(self.position);
+        let end = self.input.ceil_char_boundary(self.position + 1);
         return self.input.get(self.position..end).and_then(|c| c.chars().next());
     }
 
     pub fn next(&mut self) -> Option<char> {
         let start = self.position;
-        let end = self.input.ceil_char_boundary(self.position);
-        println!("Start: {start}, End: {end}");
-        self.position = end + 1;
+        let end = self.input.ceil_char_boundary(start + 1);
+        // println!("Start: {start}, End: {end}");
+        self.position = end;
         return self.input.get(start..end).and_then(|c| c.chars().next());
     }
 
     pub fn save_position(&mut self) {
         self.last_position = self.position;
-    }
-
-    pub fn load_position(&mut self) {
-        self.position = self.last_position;
     }
 
     pub fn lexeme(&self) -> &'a str {
@@ -47,7 +43,9 @@ impl<'a> Scanner<'a> {
     
     pub fn take_while(&mut self, predicate: &impl Fn(char) -> bool) -> &'a str {
         let start = self.position;
-        while self.next().map(predicate).unwrap_or(false) { }
+        while self.peek().map(predicate).unwrap_or(false) {
+            self.next();
+        }
         return &self.input[start..self.position];
     }
 }

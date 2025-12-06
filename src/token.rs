@@ -1,7 +1,9 @@
+use std::ops::Range;
+
 use crate::scanner::Scanner;
 
 #[derive(Clone, Copy, Debug)]
-enum TokenType {
+pub enum TokenType {
     // Single character tokens
     Comma,
     Dot,
@@ -132,8 +134,8 @@ fn is_binary(c: char) -> bool {
 
 #[derive(Debug)]
 pub struct Token<'a> {
-    token_type: TokenType,
-    lexeme: &'a str,
+    pub token_type: TokenType,
+    pub lexeme: &'a str,
 }
 
 impl<'a> Token<'a> {
@@ -142,6 +144,19 @@ impl<'a> Token<'a> {
             token_type,
             lexeme
         }
+    }
+
+    pub fn span(&self, input: &'a str) -> Range<usize> {
+        let starting_address = input.as_ptr() as usize;
+        let start = self.lexeme.as_ptr() as usize - starting_address;
+        let end = start + self.lexeme.len();
+        return start..end;
+    }
+
+    // Check if this token sits right next to another token (meaning there's no whitespace separating them)
+    pub fn is_next_to(&self, other: &Token) -> bool {
+        let this_address = self.lexeme.as_ptr() as usize + self.lexeme.len();
+        return this_address == other.lexeme.as_ptr() as usize;
     }
 
     fn scan_keyword_or_identifier(scanner: &mut Scanner<'a>, keywords: &[(&str, TokenType)]) -> TokenType {

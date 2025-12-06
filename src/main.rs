@@ -1,12 +1,13 @@
+use std::ops::Range;
+
 mod token;
 mod scanner;
 
 fn main() {
-    let tokens = token::Token::from_input("let a = 1 + 2");
-    println!("{tokens:?}");
-    
-    let mut scanner = scanner::Scanner::new("Hello world!");
-    while let Some(c) = scanner.next() {
-        println!("Scanned: {c}");
+    let input = "let number = 0b10_10 + 456";
+    let tokens = token::Token::from_input(input);
+    for token in tokens.iter() {
+        let span = token.span(input);
+        println!("Token: {:?}, Lexeme: \"{}\", span: {span:?}", token.token_type, token.lexeme);
     }
 }
