@@ -1,7 +1,7 @@
-use std::ops::Range;
-
 mod token;
 mod scanner;
+mod ast;
+mod parser;
 
 fn main() {
     let input = "let number = 0b10_10 + 456";

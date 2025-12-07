@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use crate::scanner::Scanner;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenType {
     // Single character tokens
     Comma,
@@ -54,6 +54,7 @@ pub enum TokenType {
     Const,
     Else,
     Elseif,
+    Enum,
     Extend,
     False,
     Fn,
@@ -78,6 +79,7 @@ pub enum TokenType {
     LowercaseSuper,
     UppercaseSuper,
     True,
+    Type,
     Unless,
     Until,
     While,
@@ -96,6 +98,11 @@ pub enum TokenType {
     Quadal,
     Binary,
     // Other
+    Colon,
+    ColonColon,
+    ColonArrow,
+    MinusArrow,
+    Le,
     Error,
     Eof,
 }
@@ -132,7 +139,7 @@ fn is_binary(c: char) -> bool {
     matches!(c, '0' | '1' | '_')
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Token<'a> {
     pub token_type: TokenType,
     pub lexeme: &'a str,
@@ -187,6 +194,19 @@ impl<'a> Token<'a> {
             ']' => RightBracket,
             '{' => LeftBrace,
             '}' => RightBrace,
+            ':' => {
+                match scanner.peek() {
+                    Some(':') => {
+                        scanner.next();
+                        ColonColon
+                    },
+                    Some('>') => {
+                        scanner.next();
+                        ColonArrow
+                    },
+                    _ => Colon
+                }
+            }
             '+' => {
                 match scanner.peek() {
                     Some('=') => {
@@ -206,11 +226,16 @@ impl<'a> Token<'a> {
                 }
             },
             '-' => {
-                if scanner.peek() == Some('=') {
-                    scanner.next();
-                    MinusEquals
-                } else {
-                    Minus
+                match scanner.peek() {
+                    Some('=') => {
+                        scanner.next();
+                        MinusEquals
+                    },
+                    Some('>') => {
+                        scanner.next();
+                        MinusArrow
+                    }
+                    _ => Minus,
                 }
             }
             '*' => {
@@ -233,11 +258,17 @@ impl<'a> Token<'a> {
                 }
             },
             '/' => {
-                if scanner.peek() == Some('=') {
-                    scanner.next();
-                    SlashEquals
-                } else {
-                    Slash
+                match scanner.peek() {
+                    Some('=') => {
+                        scanner.next();
+                        SlashEquals    
+                    },
+                    // TODO: maybe allow parsing comments (mainly "///" doc comments) and handle skipping comments in the parser?
+                    Some('/') => {
+                        scanner.take_while(&|c| c != '\n');
+                        return Token::scan_token(scanner);
+                    }
+                    _ => Slash
                 }
             },
             '%' => {
@@ -306,7 +337,7 @@ impl<'a> Token<'a> {
             },
             'a' => Token::scan_keyword_or_identifier(scanner, &[("abstract", Abstract), ("and", And), ("as", As)]),
             'c' => Token::scan_keyword_or_identifier(scanner, &[("class", Class), ("const", Const)]),
-            'e' => Token::scan_keyword_or_identifier(scanner, &[("else", Else), ("elseif", Elseif), ("extend", Extend)]),
+            'e' => Token::scan_keyword_or_identifier(scanner, &[("else", Else), ("elseif", Elseif), ("enum", Enum), ("extend", Extend)]),
             'f' => Token::scan_keyword_or_identifier(scanner, &[("false", False), ("fn", Fn), ("for", For), ("forever", Forever)]),
             'i' => Token::scan_keyword_or_identifier(scanner, &[("if", If), ("in", In), ("interface", Interface), ("is", Is)]),
             'l' => Token::scan_keyword_or_identifier(scanner, &[("let", Let)]),
@@ -315,13 +346,17 @@ impl<'a> Token<'a> {
             'o' => Token::scan_keyword_or_identifier(scanner, &[("of", Of), ("or", Or)]),
             's' => Token::scan_keyword_or_identifier(scanner, &[("self", LowercaseSelf), ("static", Static), ("super", LowercaseSuper)]),
             'S' => Token::scan_keyword_or_identifier(scanner, &[("Self", UppercaseSelf), ("Super", UppercaseSuper)]),
-            't' => Token::scan_keyword_or_identifier(scanner, &[("true", True)]),
+            't' => Token::scan_keyword_or_identifier(scanner, &[("true", True), ("type", Type)]),
             'u' => Token::scan_keyword_or_identifier(scanner, &[("unless", Unless), ("until", Until)]),
             'w' => Token::scan_keyword_or_identifier(scanner, &[("while", While), ("with", With)]),
             '0' => Token::number_with_base(scanner).unwrap_or(Error),
             '1'..='9' => Token::number(scanner),
             '"' => Token::string(scanner).unwrap_or(Error),
             '\'' => Token::char(scanner).unwrap_or(Error),
+            ws if ws.is_whitespace() => {
+                scanner.take_while(&char::is_whitespace);
+                return Token::scan_token(scanner);
+            },
             _ => Error
         };
 
