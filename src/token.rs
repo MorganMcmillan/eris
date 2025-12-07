@@ -1,16 +1,23 @@
 use std::ops::Range;
 
-use crate::scanner::Scanner;
+use crate::scanner::{self, Scanner};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenType {
     // Single character tokens
     Comma,
-    Dot,
     Dollar,
     At,
     Hash,
     // Matching pairs of tokens
+    Dot,
+    DotDot,
+    DotDotDot,
+    DotDotEquals,
+    Colon,
+    ColonColon,
+    ColonArrow,
+    // Potential multi character tokens
     LeftParen,
     RightParen,
     LeftBracket,
@@ -98,9 +105,6 @@ pub enum TokenType {
     Quadal,
     Binary,
     // Other
-    Colon,
-    ColonColon,
-    ColonArrow,
     MinusArrow,
     Le,
     Error,
@@ -183,7 +187,24 @@ impl<'a> Token<'a> {
         use TokenType::*;
         let token_type = match scanner.next()? {
             ',' => Comma,
-            '.' => Dot,
+            '.' => match scanner.peek() {
+                Some('.') => {
+                    scanner.next();
+                    match scanner.peek() {
+                        Some('.') => {
+                            scanner.next();
+                            DotDotDot
+                        },
+                        Some('=') => {
+                            scanner.next();
+                            DotDotEquals
+                        },
+                        _ => DotDot
+                    }
+                },
+                _ => Dot
+            }
+            ,
             '$' => Dollar,
             '@' => At,
             // TODO: match both macro identifiers and hash-strings
@@ -194,82 +215,72 @@ impl<'a> Token<'a> {
             ']' => RightBracket,
             '{' => LeftBrace,
             '}' => RightBrace,
-            ':' => {
-                match scanner.peek() {
-                    Some(':') => {
+            ':' => match scanner.peek() {
+                Some(':') => {
+                    scanner.next();
+                    ColonColon
+                },
+                Some('>') => {
+                    scanner.next();
+                    ColonArrow
+                },
+                _ => Colon
+            },
+            '+' => match scanner.peek() {
+                Some('=') => {
+                    scanner.next();
+                    PlusEquals
+                },
+                Some('+') => {
+                    scanner.next();
+                    if scanner.peek() == Some('=') {
                         scanner.next();
-                        ColonColon
-                    },
-                    Some('>') => {
-                        scanner.next();
-                        ColonArrow
-                    },
-                    _ => Colon
+                        PlusPlusEquals
+                    } else {
+                        PlusPlus
+                    }
+                },
+                _ => Plus
+            },
+            '-' => match scanner.peek() {
+                Some('=') => {
+                    scanner.next();
+                    MinusEquals
+                },
+                Some('>') => {
+                    scanner.next();
+                    MinusArrow
                 }
-            }
-            '+' => {
-                match scanner.peek() {
-                    Some('=') => {
-                        scanner.next();
-                        PlusEquals
-                    },
-                    Some('+') => {
-                        scanner.next();
-                        if scanner.peek() == Some('=') {
+                _ => Minus,
+            },
+            '*' => match scanner.peek() {
+                Some('=') => {
+                    scanner.next();
+                    StarEquals
+                },
+                Some('*') => {
+                    scanner.next();
+                    match scanner.peek() {
+                        Some('=') => {
                             scanner.next();
-                            PlusPlusEquals
-                        } else {
-                            PlusPlus
-                        }
-                    },
-                    _ => Plus
-                }
-            },
-            '-' => {
-                match scanner.peek() {
-                    Some('=') => {
-                        scanner.next();
-                        MinusEquals
-                    },
-                    Some('>') => {
-                        scanner.next();
-                        MinusArrow
+                            StarStarEquals
+                        },
+                        _ => StarStar
                     }
-                    _ => Minus,
-                }
-            }
-            '*' => {
-                match scanner.peek() {
-                    Some('=') => {
-                        scanner.next();
-                        StarEquals
-                    },
-                    Some('*') => {
-                        scanner.next();
-                        match scanner.peek() {
-                            Some('=') => {
-                                scanner.next();
-                                StarStarEquals
-                            },
-                            _ => StarStar
-                        }
-                    },
-                    _ => Star
-                }
+                },
+                _ => Star
             },
-            '/' => {
-                match scanner.peek() {
-                    Some('=') => {
-                        scanner.next();
-                        SlashEquals    
-                    },
-                    // TODO: maybe allow parsing comments (mainly "///" doc comments) and handle skipping comments in the parser?
-                    Some('/') => {
-                        scanner.take_while(&|c| c != '\n');
-                        return Token::scan_token(scanner);
-                    }
-                    _ => Slash
+            '/' => match scanner.peek() {
+                Some('=') => {
+                    scanner.next();
+                    SlashEquals    
+                },
+                // TODO: maybe allow parsing comments (mainly "///" doc comments) and handle skipping comments in the parser?
+                Some('/') => {
+                    scanner.take_while(&|c| c != '\n');
+                    return Token::scan_token(scanner);
                 }
+                _ => Slash
             },
             '%' => {
                 if scanner.peek() == Some('=') {

@@ -2,18 +2,47 @@ use crate::token::Token;
 
 pub enum Statement<'a> {
     Class(Class<'a>),
+    AbstractClass(AbstractClass<'a>),
     Interface(Interface<'a>),
     Mixin(Mixin<'a>),
     Enum(Enum<'a>),
     Function(FunctionDefinition<'a>),
-    Use(Use<'a>),
+    Use(UseClause<'a>),
     Constant(ConstAssignment<'a>)
+}
+
+pub enum UseClause<'a> {
+    /// End of use statement
+    None,
+    /// "*"
+    Wildcard,
+    // An identifier, optionally followed by another use clause
+    // Yes it's a linked list
+    Identifier(Identifier<'a>, Box<UseClause<'a>>),
+    IdentifierWithAlias(Identifier<'a>, Identifier<'a>),
+    // A block allowing multiple items to be used from the same namespace
+    BracesOrSomething(Vec<UseClause<'a>>),
+    /// Only allowed inside "use lib::{self, ns1, *}"
+    /// Allows optional alias
+    SelfKeyword(Option<Identifier<'a>>)
+}
+
+// Wait, isn't this more like a static constant?
+// In Rust, you have let and let mut.
+
+pub struct ConstAssignment<'a> {
+    name: Identifier<'a>,
+    /// Unlike let assignments, the type is required.
+    item_type: Type<'a>,
+    /// Must be checked if it can be run at compile time
+    value: Expression<'a>
 }
 
 pub struct StatementBlock<T> {
     pub statements: Vec<T>,
 }
 
+#[derive(Clone, Copy)]
 pub struct Identifier<'a>(pub Token<'a>);
 
 impl<'a> Identifier<'a> {
@@ -22,10 +51,10 @@ impl<'a> Identifier<'a> {
 
 pub enum Type<'a> {
     Named(Identifier<'a>, Vec<Type<'a>>),
-    Interface(InterfaceBody),
+    Interface(InterfaceBody<'a>),
     Tuple(Vec<Type<'a>>),
     Object{
-        body: AbstractClassBody,
+        body: AbstractClassBody<'a>,
         supertype: Option<Box<Type<'a>>>
     },
     Array(Box<Type<'a>>, usize),
@@ -43,8 +72,8 @@ pub enum Type<'a> {
 
 pub struct FunctionDeclaration<'a> {
     pub name: Identifier<'a>,
-    pub generics: Vec<Generic>,
-    pub parameters: Vec<MatchClause>,
+    pub generics: Vec<Generic<'a>>,
+    pub parameters: Vec<MatchClause<'a>>,
     pub return_type: Option<Type<'a>>,
 }
 
@@ -57,15 +86,33 @@ pub type Block<'a> = StatementBlock<FunctionStatement<'a>>;
 
 pub enum FunctionStatement<'a> {
     // Note: check for expression statement which don't cause side-effects or are not the last statement in the block
-    Expression(Expression),
-    Let(LetStatement),
-    Assignment(Assignment),
-    Return(ReturnStatement),
-    Forever(ForeverStatement),
-    While(WhileStatement),
-    For(ForStatement),
-    Break(BreakStatement),
-    Continue(ContinueStatement),
+    Expression(Expression<'a>),
+    Let(LetStatement<'a>),
+    Assignment(Assignment<'a>),
+    Return(Option<Expression<'a>>),
+    Forever(Block<'a>),
+    While(WhileStatement<'a>),
+    For(ForStatement<'a>),
+    Break(BreakStatement<'a>),
+    Continue(ContinueStatement<'a>),
+}
+
+pub struct WhileStatement<'a> {
+    pub condition: Expression<'a>,
+    pub body: Block<'a>,
+    /// Used for when a labeled while block ends by the condition evaluating to false
+    pub else_branch: Option<Block<'a>>
+}
+
+pub struct ForStatement<'a> {
+    loop_variable: Option<MatchClause<'a>>,
+    /// If no "in" is found and an identifier was parsed, promote that identifier to an expression
+    iterator: Expression<'a>
+}
+
+pub struct BreakStatement<'a> {
+    label: Option<Identifier<'a>>,
+    value: Option<Expression<'a>>
 }
 
 pub struct LetStatement<'a> {
@@ -98,27 +145,45 @@ pub enum Literal<'a> {
     Tuple(Vec<Expression<'a>>),
     Object(Vec<(Identifier<'a>, Expression<'a>)>),
     Array(Vec<Expression<'a>>),
-    Function()
-    Range(Option<Box<Literal<'a>>>, Option<Box<Literal<'a>>>),
+    Range(Option<Box<Expression<'a>>>, Option<Box<Expression<'a>>>),
+}
+
+pub struct InterpolatedString<'a>{
+    token: Token<'a>,
+    pieces: Vec<InterpolatedStringPiece<'a>>,
+}
+
+pub enum InterpolatedStringPiece<'a> {
+    Literal(&'a str),
+    Escaped(char),
+    Expression(Expression<'a>),
+    TypedExpression(Expression<'a>, Type<'a>)
 }
 
 pub enum Expression<'a> {
     Block(Block<'a>),
     Binary(Token<'a>, Box<Expression<'a>>, Box<Expression<'a>>),
     Unary(Token<'a>, Box<Expression<'a>>),
+    /// "object.foo"
     Field(Box<Expression<'a>>, Identifier<'a>),
+    /// "tuple.1"
+    TupleField(Box<Expression<'a>>, u32),
+    /// "array[index]"
     Subscript{
         array: Box<Expression<'a>>,
         index: Box<Expression<'a>>
     },
+    /// "function(a, b, c)"
     FunctionCall{
         function: Box<Expression<'a>>,
         arguments: Vec<Expression<'a>>
     },
+    /// "*pointer"
+    Dereference(Box<Expression<'a>>),
     If(IfExpression<'a>),
     Match(MatchExpression<'a>),
     Identifier(Identifier<'a>),
-    With(WithExpression),
+    With(WithExpression<'a>),
     Literal(Literal<'a>)
 }
 
@@ -139,62 +204,117 @@ pub struct MatchExpression<'a> {
 }
 
 pub struct MatchClause<'a> {
-    // Todo
+    name: Option<Identifier<'a>>,
+    destructure: Option<Destructure<'a>>,
+    item_type: Option<Type<'a>>,
+    // "if|unless <condition>"
+    guard_clause: Option<Expression<'a>>
+}
+
+pub enum Destructure<'a> {
+    Tuple(Vec<MatchClause<'a>>),
+    Array(Vec<ArrayDestructure<'a>>),
+    Object(Vec<ObjectDestructure<'a>>)
+}
+
+pub enum ArrayDestructure<'a> {
+    Splat(Option<Destructure<'a>>),
+    Plain(MatchClause<'a>)
+}
+
+/// Syntax: "name @ des: type = field"
+pub struct ObjectDestructure<'a> {
+    clause: MatchClause<'a>,
+    // If None, use the destructure's name
+    field: Option<Identifier<'a>>
+}
+
+pub struct WithExpression<'a> {
+    variables: Vec<Identifier<'a>>,
+    body: Block<'a>
 }
 
 pub struct Generic<'a> {
     pub name: Identifier<'a>,
-    pub supertype: Type,
-    pub default_type: Option<Type>
+    pub supertype: Type<'a>,
+    pub default_type: Option<Type<'a>>
 }
 
 pub struct Class<'a> {
-    pub generics: Vec<Generic>,
+    pub generics: Vec<Generic<'a>>,
     pub name: Identifier<'a>,
-    pub parent: Option<Type>,
+    pub parent: Option<Type<'a>>,
     pub with: Vec<Type<'a>>,
-    pub body: ClassBody
+    pub body: ClassBody<'a>
 }
 
-type ClassBody = Block<ClassStatement>;
+pub type ClassBody<'a> = StatementBlock<ClassStatement<'a>>;
 
 // Todo make separate AbstractClass struct
-pub enum ClassStatement {
-    // Can be assigned either a value or (for abstract classes only) be left blank
-    StaticField(StaticField),
-    Field(Field),
-    // Abstract class only,
-    TypeDeclaration(TypeDeclaration),
-    TypeDefinition(TypeDefinition),
-    Method(FunctionDefinition),
-    StaticMethod(FunctionDefinition)
+pub enum ClassStatement<'a> {
+    StaticField(StaticField<'a>),
+    Field(Field<'a>),
+    TypeDefinition(TypeDefinition<'a>),
+    Method(FunctionDefinition<'a>),
+    StaticMethod(FunctionDefinition<'a>)
+}
+
+pub struct Field<'a> {
+    name: Identifier<'a>,
+    item_type: Type<'a>,
+}
+
+pub struct AbstractClass<'a> {
+    pub generics: Vec<Generic<'a>>,
+    pub name: Identifier<'a>,
+    pub parent: Option<Type<'a>>,
+    pub with: Vec<Type<'a>>,
+    pub body: AbstractClassBody<'a>
+}
+
+pub type InterfaceBody<'a> = StatementBlock<InterfaceStatement<'a>>;
+pub type AbstractClassBody<'a> = InterfaceBody<'a>;
+
+pub enum InterfaceStatement<'a> {
+    StaticRequirement(PartialStaticField<'a>),
+    StaticDefinition(StaticField<'a>),
+    FieldRequirement(PartialField<'a>),
+    FieldDefinition(Field<'a>),
+    TypeRequirement(TypeDeclaration<'a>),
+    TypeDefinition(TypeDefintion<'a>),
+    StaticMethodRequirement(FunctionDeclaration<'a>),
+    StaticMethod(FunctionDefinition<'a>),
+    MethodRequirement(FunctionDeclaration<'a>),
+    Method(FunctionDefinition<'a>)
+}
+
+pub struct PartialStaticField<'a> {
+    pub name: Identifier<'a>,
+    pub item_type: Type<'a>,
+}
+
+pub struct StaticField<'a> {
+    pub name: Identifier<'a>,
+    pub item_type: Type<'a>,
+    pub value: Expression<'a>
 }
 
 pub struct Interface<'a> {
-    pub generics: Vec<Generic>,
+    pub generics: Vec<Generic<'a>>,
     pub name: Identifier<'a>,
-    pub parent: Option<Type>,
-    pub body: InterfaceBody
-}
-
-pub type InterfaceBody = Block<InterfaceStatement>;
-
-pub enum InterfaceStatement {
-    MethodDeclaration(FunctionDeclaration),
-    MethodDefinition(FunctionDefinition),
-    TypeDeclaration(TypeDeclaration),
-    StaticDeclaration(StaticField)
+    pub parent: Option<Type<'a>>,
+    pub body: InterfaceBody<'a>
 }
 
 pub struct Mixin<'a> {
     pub name: Identifier<'a>,
-    pub generics: Vec<Generic>,
-    pub body: ClassBody
+    pub generics: Vec<Generic<'a>>,
+    pub body: ClassBody<'a>
 }
 
 pub struct Enum<'a> {
     pub name: Identifier<'a>,
-    pub generics: Vec<Generic>,
+    pub generics: Vec<Generic<'a>>,
     pub body: EnumBody<'a>
 }
 
@@ -203,10 +323,10 @@ pub type EnumBody<'a> = Block<(Identifier<'a>, EnumValue<'a>)>;
 pub enum EnumValue<'a> {
     None,
     // "= 1"
-    Value(Literal),
+    Value(Literal<'a>),
     ValueOfConstant(Identifier<'a>),
     // "(Type1, Type2)"
-    Tuple(Vec<Type>),
+    Tuple(Vec<Type<'a>>),
     // "{ name: Type }"
-    Object(Vec<(Identifier<'a>, Type)>)
+    Object(Vec<(Identifier<'a>, Type<'a>)>)
 }

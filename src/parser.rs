@@ -1,4 +1,6 @@
-use crate::{ast::{self, Expression}, token::{Token, TokenType::{self, *}}};
+use either::Either::{self, Left, Right};
+
+use crate::{ast::{self, AbstractClassBody, Assignment, AssignmentTarget, ClassBody, ClassStatement, Expression, InterfaceBody}, token::{Token, TokenType::{self, *}}};
 
 // Note: I hate how rust prevents mutating the struct whenever any part of it is immutably borrowed.
 // It makes it so hard to manage internal state, even when its as simple as passing references to tokens.
@@ -205,7 +207,7 @@ impl<'a> Parser<'a> {
         return Ok(generics);
     }
 
-    fn type_literal(&mut self) -> Result<ast::Type> {
+    fn type_literal(&mut self) -> Result<ast::Type<'a>> {
         todo!()
     }
     
@@ -306,7 +308,7 @@ impl<'a> Parser<'a> {
     fn number(&mut self, number: Token<'a>) -> Result<ast::Literal<'a>> {
         type CharMapper = fn(char, u32) -> Option<u32>;
 
-        let (mapping, radix): (&fn(char, u32) -> Option<u32>, usize) = match number.token_type {
+        let (mapping, radix): (&fn(char, u32) -> Option<u32>, u64) = match number.token_type {
             Base64 => (&(base_64 as CharMapper), 64),
                 Base36 => (&(char::to_digit as CharMapper), 36),
                 Base32 => (&(char::to_digit as fn(char, u32) -> Option<u32>), 32),
@@ -325,15 +327,29 @@ impl<'a> Parser<'a> {
                 .unwrap()
                 .to_digit(10)
                 .unwrap();
-            return ast::Literal::Integer(output as u32);
+            return Ok(ast::Literal::Integer(output as u64));
         }
 
-        let current = 0;
-        if get_char(lexeme) == '0' {
+        let mut current = 0;
+        if get_char(lexeme, 0) == Some('0') {
             current += 2;
         }
 
-        return Ok(());
+        // TODO: parse floating point numbers
+        // Also maybe handle really large numbers correctly
+
+        // Parse number
+        let mut parsed_number = 0u64;
+        while let Some(digit) = get_char(lexeme, self.current) {
+            parsed_number = parsed_number
+                .checked_mul(radix)
+                .ok_or_else(|| Error::NumberTooLarge)?;
+
+            parsed_number += mapping(digit, radix as u32).unwrap() as u64;
+            current += 1;
+        }
+
+        return Ok(ast::Literal::Integer(parsed_number));
     }
 
     fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
@@ -380,7 +396,7 @@ impl<'a> Parser<'a> {
     }
 
     fn function_call(&mut self) -> Result<ast::Expression<'a>> {
-        let expr = self.primary_expression()?;
+        let mut expr = self.primary_expression()?;
 
         loop {
             if self.is_next(LeftParen) {
@@ -393,13 +409,31 @@ impl<'a> Parser<'a> {
             }
         }
         
-        return expr;
+        return Ok(expr);
     }
 
     fn assignment(&mut self) -> Result<ast::Assignment<'a>> {
-        let expr = self.function_call()?;
+        let possibly_invalid_token = self.peek();
+        let target_expr = self.function_call()?;
         self.consume(Equals)?;
-
+        let value = self.expression()?;
+        
+        use ast::{Expression as Expr, AssignmentTarget::*};
+        let target = match target_expr {
+            Expr::Identifier(i) => Variable(i),
+            Expr::Field(object, field) => Field(*object, field),
+            Expr::Subscript { array, index } => Subscript {
+                array: *array,
+                index: *index
+            },
+            Expr::Dereference(target) => Dereference(*target),
+            _ => return Err(Error::InvalidLeftValue(possibly_invalid_token))
+        }
+        
+        return Ok(ast::Assignment {
+            target,
+            value
+        })
     }
 
     fn function_statement(&mut self) -> Result<ast::FunctionStatement<'a>> {
@@ -438,6 +472,7 @@ impl<'a> Parser<'a> {
         })
     }
     
+    /// Assumes `Function` is already consumed
     fn function(&mut self) -> Result<ast::FunctionDefinition<'a>> {
         let declaration = self.function_declaration()?;
         let body = self.function_body()?;
@@ -447,7 +482,145 @@ impl<'a> Parser<'a> {
             body
         });
     }
+    
+    fn object(&mut self) -> Result<Vec<(ast::Identifier<'a>, ast::Expression<'a>)>> {
+        let mut fields = Vec::new();
 
+        loop {
+            let field = self.identifier()?;
+            
+            let value = if self.is_next(Equals) {
+                self.expression()?
+            } else {
+                ast::Expression::Identifier(field.clone())
+            };
+            
+            fields.push((field, value));
+
+            if self.is_next(Comma) {
+                break;
+            }
+        }
+
+        self.consume(RightBrace)?;
+        return Ok(fields)
+    }
+    
+    fn abstract_class(&self) -> Result<ast::AbstractClass<'a>> {
+        self.consume(Class);
+
+        let name = self.identifier()?;
+        
+        let generics = self.generic_params()?;
+
+        let parent = None;
+        if self.matches(&[Of]) {
+            parent = Some(self.named_type()?);
+        }
+
+        let mut with = Vec::with_capacity(2);
+        if self.matches(&[With]) {
+
+            loop {
+                with.push(self.named_type()?);
+                if !self.is_next(Comma) {
+                    break;
+                }
+            }
+        }
+
+        let body = self.interface_body()?;
+
+        return Ok(ast::AbstractClass {
+            generics,
+            name,
+            parent,
+            with,
+            body
+        })
+    }
+    
+    fn interface_body(&mut self) -> Result<ast::InterfaceBody<'a>> {
+        self.consume(LeftBrace)?;
+
+        let mut statements = Vec::new();
+        while !self.is_next(RightBrace) {
+            use ast::InterfaceStatement as Stmt;
+
+            let statement = match self.next().token_type {
+                Identifier => Stmt::Field(self.field()?),
+                Type => Stmt::TypeDefinition(self.type_definition()?),
+                Fn => Stmt::Method(self.function()?),
+                Static => match self.next().token_type {
+                    Fn => Stmt::StaticMethod(self.static_function()?),
+                    Identifier => self.partial_static_field()?.either(Stmt::StaticRequirement, Stmt::StaticDefinition),
+                    unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected))
+                },
+                unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected))
+            };
+
+            statements.push(statement);
+        }
+
+
+        return Ok(InterfaceBody { statements });
+    }
+    
+    fn class_body(&mut self) -> Result<ast::ClassBody<'a>> {
+        self.consume(LeftBrace)?;
+
+        let mut statements = Vec::new();
+        while !self.is_next(RightBrace) {
+            use ast::ClassStatement as Stmt;
+
+            let statement = match self.next().token_type {
+                Identifier => Stmt::Field(self.field()?),
+                Type => Stmt::TypeDefinition(self.type_definition()?),
+                Fn => Stmt::Method(self.function()?),
+                Static => match self.next().token_type {
+                    Fn => Stmt::StaticMethod(self.static_function()?),
+                    Identifier => Stmt::StaticField(self.static_field()?),
+                    unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected))
+                },
+                unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected))
+            };
+
+            statements.push(statement);
+        }
+
+
+        return Ok(ClassBody { statements });
+    }
+    
+    fn field(&self) -> Result<ast::Field<'a>> {
+        todo!()
+    }
+    
+    fn partial_static_field(&mut self) -> Result<Either<ast::PartialStaticField<'a>, ast::StaticField<'a>>> {
+        let name = ast::Identifier(self.previous());
+
+        self.consume(Colon)?;
+        let item_type = self.type_literal()?;
+
+        if self.is_next(Equals) {
+            let value = self.expression()?;
+            
+            return Ok(Right(ast::StaticField {
+                name,
+                item_type,
+                value
+            }));
+        }
+
+        return Ok(Left(ast::PartialStaticField {
+            name,
+            item_type
+        }));
+    }
+}
+
+fn get_char(string: &str, index: usize) -> Option<char> {
+    string.get(index..(index + 1)).and_then(|s| s.chars().next())
 }
 
 fn base_64(c: char, _: u32) -> Option<u32> {
@@ -465,9 +638,10 @@ pub enum Warning {
     Other(std::string::String)
 }
 
-#[derive(Clone)]
 pub enum Error {
+    NumberTooLarge,
     UnexpectedToken(TokenType, TokenType),
+    InvalidLeftValue(TokenType),
     Other(std::string::String)
 }
 
