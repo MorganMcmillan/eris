@@ -149,8 +149,8 @@ pub struct ForStatement<'a> {
 
 #[derive(Clone)]
 pub struct BreakStatement<'a> {
-    label: Option<Identifier<'a>>,
-    value: Option<Expression<'a>>
+    pub label: Option<Identifier<'a>>,
+    pub value: Option<Expression<'a>>
 }
 
 #[derive(Clone)]
@@ -253,11 +253,11 @@ pub struct MatchExpression<'a> {
 
 #[derive(Clone)]
 pub struct MatchClause<'a> {
-    name: Option<Identifier<'a>>,
-    destructure: Option<Destructure<'a>>,
-    item_type: Option<Type<'a>>,
+    pub name: Option<Identifier<'a>>,
+    pub destructure: Option<Destructure<'a>>,
+    pub item_type: Option<Type<'a>>,
     // "if|unless <condition>"
-    guard_clause: Option<Expression<'a>>
+    pub guard_clause: Option<Expression<'a>>
 }
 
 impl<'a> MatchClause<'a> {

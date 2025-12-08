@@ -57,8 +57,10 @@ pub enum TokenType {
     Abstract,
     And,
     As,
+    Break,
     Class,
     Const,
+    Continue,
     Else,
     Elseif,
     Enum,
@@ -80,6 +82,7 @@ pub enum TokenType {
     Not,
     Of,
     Or,
+    Return,
     LowercaseSelf,
     UppercaseSelf,
     Static,
@@ -171,7 +174,7 @@ impl<'a> Token<'a> {
         return this_address == other.lexeme.as_ptr() as usize;
     }
 
-    fn scan_keyword_or_identifier(scanner: &mut Scanner<'a>, keywords: &[(&str, TokenType)]) -> TokenType {
+    fn keyword(scanner: &mut Scanner<'a>, keywords: &[(&str, TokenType)]) -> TokenType {
         // TODO: replace with trie
         let word = scanner.take_while(&is_alphanumeric);
         for (keyword, token) in keywords {
@@ -347,20 +350,22 @@ impl<'a> Token<'a> {
                     Error
                 }
             },
-            'a' => Token::scan_keyword_or_identifier(scanner, &[("abstract", Abstract), ("and", And), ("as", As)]),
-            'c' => Token::scan_keyword_or_identifier(scanner, &[("class", Class), ("const", Const)]),
-            'e' => Token::scan_keyword_or_identifier(scanner, &[("else", Else), ("elseif", Elseif), ("enum", Enum), ("extend", Extend)]),
-            'f' => Token::scan_keyword_or_identifier(scanner, &[("false", False), ("fn", Fn), ("for", For), ("forever", Forever)]),
-            'i' => Token::scan_keyword_or_identifier(scanner, &[("if", If), ("in", In), ("interface", Interface), ("is", Is)]),
-            'l' => Token::scan_keyword_or_identifier(scanner, &[("let", Let)]),
-            'm' => Token::scan_keyword_or_identifier(scanner, &[("macro", Macro), ("match", Match), ("mixin", Mixin)]),
-            'n' => Token::scan_keyword_or_identifier(scanner, &[("never", Never), ("nil", Nil), ("not", Not)]),
-            'o' => Token::scan_keyword_or_identifier(scanner, &[("of", Of), ("or", Or)]),
-            's' => Token::scan_keyword_or_identifier(scanner, &[("self", LowercaseSelf), ("static", Static), ("super", LowercaseSuper)]),
-            'S' => Token::scan_keyword_or_identifier(scanner, &[("Self", UppercaseSelf), ("Super", UppercaseSuper)]),
-            't' => Token::scan_keyword_or_identifier(scanner, &[("true", True), ("type", Type)]),
-            'u' => Token::scan_keyword_or_identifier(scanner, &[("unless", Unless), ("until", Until), ("use", Use)]),
-            'w' => Token::scan_keyword_or_identifier(scanner, &[("while", While), ("with", With)]),
+            'a' => Token::keyword(scanner, &[("abstract", Abstract), ("and", And), ("as", As)]),
+            'b' => Token::keyword(scanner, &[("break", Break)]),
+            'c' => Token::keyword(scanner, &[("class", Class), ("const", Const), ("continue", Continue)]),
+            'e' => Token::keyword(scanner, &[("else", Else), ("elseif", Elseif), ("enum", Enum), ("extend", Extend)]),
+            'f' => Token::keyword(scanner, &[("false", False), ("fn", Fn), ("for", For), ("forever", Forever)]),
+            'i' => Token::keyword(scanner, &[("if", If), ("in", In), ("interface", Interface), ("is", Is)]),
+            'l' => Token::keyword(scanner, &[("let", Let)]),
+            'm' => Token::keyword(scanner, &[("macro", Macro), ("match", Match), ("mixin", Mixin)]),
+            'n' => Token::keyword(scanner, &[("never", Never), ("nil", Nil), ("not", Not)]),
+            'o' => Token::keyword(scanner, &[("of", Of), ("or", Or)]),
+            'r' => Token::keyword(scanner, &[("return", Return)]),
+            's' => Token::keyword(scanner, &[("self", LowercaseSelf), ("static", Static), ("super", LowercaseSuper)]),
+            'S' => Token::keyword(scanner, &[("Self", UppercaseSelf), ("Super", UppercaseSuper)]),
+            't' => Token::keyword(scanner, &[("true", True), ("type", Type)]),
+            'u' => Token::keyword(scanner, &[("unless", Unless), ("until", Until), ("use", Use)]),
+            'w' => Token::keyword(scanner, &[("while", While), ("with", With)]),
             '0' => Token::number_with_base(scanner).unwrap_or(Error),
             '1'..='9' => Token::number(scanner),
             '"' => Token::string(scanner).unwrap_or(Error),
