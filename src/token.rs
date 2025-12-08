@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::scanner::{self, Scanner};
+use crate::scanner::Scanner;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenType {
@@ -89,6 +89,7 @@ pub enum TokenType {
     Type,
     Unless,
     Until,
+    Use,
     While,
     With,
     // Literals
@@ -358,7 +359,7 @@ impl<'a> Token<'a> {
             's' => Token::scan_keyword_or_identifier(scanner, &[("self", LowercaseSelf), ("static", Static), ("super", LowercaseSuper)]),
             'S' => Token::scan_keyword_or_identifier(scanner, &[("Self", UppercaseSelf), ("Super", UppercaseSuper)]),
             't' => Token::scan_keyword_or_identifier(scanner, &[("true", True), ("type", Type)]),
-            'u' => Token::scan_keyword_or_identifier(scanner, &[("unless", Unless), ("until", Until)]),
+            'u' => Token::scan_keyword_or_identifier(scanner, &[("unless", Unless), ("until", Until), ("use", Use)]),
             'w' => Token::scan_keyword_or_identifier(scanner, &[("while", While), ("with", With)]),
             '0' => Token::number_with_base(scanner).unwrap_or(Error),
             '1'..='9' => Token::number(scanner),
