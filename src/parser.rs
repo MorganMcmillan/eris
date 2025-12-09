@@ -1,6 +1,29 @@
-use either::Either::{self, Left, Right};
+use crate::{
+    ast,
+    token::{
+        Token,
+        TokenType::{self, *},
+    },
+};
 
-use crate::{ast, token::{Token, TokenType::{self, *}}};
+/// Used to unwrap tuples with a single value
+trait FirstOr<T> {
+    /// Returns the first item if the array is of length 1.
+    /// Otherwise returns the array wrapped to match `T`.
+    fn first_or<F: FnMut(Self) -> T>(self, f: F) -> T
+    where
+        Self: Sized + Clone;
+}
+
+impl<T: Clone> FirstOr<T> for Vec<T> {
+    fn first_or<F: FnMut(Self) -> T>(self, mut f: F) -> T {
+        if self.len() == 1 {
+            self[0].clone()
+        } else {
+            f(self)
+        }
+    }
+}
 
 // Note: I hate how rust prevents mutating the struct whenever any part of it is immutably borrowed.
 // It makes it so hard to manage internal state, even when its as simple as passing references to tokens.
@@ -12,7 +35,7 @@ pub struct Parser<'a> {
     /// Current token
     current: usize,
     warnings: Vec<Warning>,
-    errors: Vec<Error>
+    errors: Vec<Error>,
 }
 
 // TODO: Implement Pratt Parsing
@@ -24,7 +47,7 @@ impl<'a> Parser<'a> {
             tokens: Token::from_input(input),
             current: 0,
             warnings: Vec::new(),
-            errors: Vec::new()
+            errors: Vec::new(),
         }
     }
 
@@ -47,18 +70,20 @@ impl<'a> Parser<'a> {
 
     fn warn(&mut self, message: std::string::String) {
         self.warnings.push(Warning::Other(message));
-    }    
-    
+    }
+
     // Parser helpers
-    
+
     fn peek(&self) -> Token<'a> {
         self.tokens[self.current]
     }
-    
+
     // Consumes the token if it is present
     fn is_next(&mut self, expected: TokenType) -> bool {
         let is_next = self.peek().token_type == expected;
-        if is_next { self.current += 1 }
+        if is_next {
+            self.current += 1
+        }
         return is_next;
     }
 
@@ -88,7 +113,7 @@ impl<'a> Parser<'a> {
         }
         return None;
     }
-    
+
     /// Consumes a token if it matches the expected token type
     /// Otherwise, returns an error.
     /// Does not consume the token if it does not match.
@@ -99,7 +124,136 @@ impl<'a> Parser<'a> {
             Err(Error::UnexpectedToken(expected, self.previous().token_type))
         }
     }
-    
+
+    // Combinators
+
+    fn if_next<T>(
+        &mut self,
+        token: TokenType,
+        then: fn(&mut Self) -> Result<T>,
+    ) -> Result<Option<T>> {
+        if self.is_next(token) {
+            Ok(Some(then(self)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn list0<T: 'a>(
+        &mut self,
+        item: fn(&mut Self) -> Result<T>,
+        closing: TokenType,
+    ) -> Result<Vec<T>> {
+        let mut list: Vec<T> = Vec::new();
+
+        while !self.is_next(closing) {
+            list.push(item(self)?);
+        }
+
+        return Ok(list);
+    }
+
+    fn list1<T: 'a>(
+        &mut self,
+        item: fn(&mut Self) -> Result<T>,
+        closing: TokenType,
+    ) -> Result<Vec<T>> {
+        let mut list: Vec<T> = vec![item(self)?];
+
+        while !self.is_next(closing) {
+            list.push(item(self)?);
+        }
+
+        return Ok(list);
+    }
+
+    /// Consumes zero or more of a parsed item with a separator, followed by a closing token
+    fn separated_list0<T: 'a>(
+        &mut self,
+        separator: TokenType,
+        item: fn(&mut Self) -> Result<T>,
+        closing: TokenType,
+    ) -> Result<Vec<T>> {
+        let mut list: Vec<T> = Vec::new();
+
+        if !self.check(closing) {
+            loop {
+                list.push(item(self)?);
+
+                if !self.is_next(separator) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(closing)?;
+        return Ok(list);
+    }
+
+    /// Consumes one or more of a parsed item with a separator, followed by a closing token
+    fn separated_list1<T: 'a>(
+        &mut self,
+        separator: TokenType,
+        item: fn(&mut Self) -> Result<T>,
+        closing: TokenType,
+    ) -> Result<Vec<T>> {
+        let mut list: Vec<T> = vec![item(self)?];
+
+        while !self.is_next(closing) {
+            self.consume(separator)?;
+            list.push(item(self)?);
+        }
+
+        return Ok(list);
+    }
+
+    /// Comma separated list
+    fn cs_list0<T: 'a>(
+        &mut self,
+        item: fn(&mut Self) -> Result<T>,
+        closing: TokenType,
+    ) -> Result<Vec<T>> {
+        self.separated_list0(Comma, item, closing)
+    }
+
+    /// Comma separated list
+    fn cs_list1<T: 'a>(
+        &mut self,
+        item: fn(&mut Self) -> Result<T>,
+        closing: TokenType,
+    ) -> Result<Vec<T>> {
+        self.separated_list1(Comma, item, closing)
+    }
+
+    fn separated_while1<T: 'a>(
+        &mut self,
+        separator: TokenType,
+        item: fn(&mut Self) -> Result<T>,
+    ) -> Result<Vec<T>> {
+        let mut list: Vec<T> = vec![item(self)?];
+
+        while self.is_next(separator) {
+            list.push(item(self)?);
+        }
+
+        return Ok(list);
+    }
+
+    fn block<T: 'a>(
+        &mut self,
+        statement: fn(&mut Self) -> Result<T>
+    ) -> Result<ast::StatementBlock<T>> {
+        self.consume(LeftBrace)?;
+
+        Ok(ast::StatementBlock { 
+            statements: self.list0(statement, RightBrace)?
+        })
+    }
+
+    fn after(&mut self, expected: TokenType) -> Result<&mut Self> {
+        self.consume(expected).map(|_| self)
+    }
+
     // Get the parser back into a stable state after an error is found
     fn synchronize(&mut self) {
         todo!()
@@ -110,14 +264,14 @@ impl<'a> Parser<'a> {
     pub fn parse(&mut self) -> Vec<ast::Statement<'a>> {
         // Assuming every 32 tokens is a top-level statement
         let mut statements = Vec::with_capacity(self.tokens.len() / 32);
-        
+
         while !self.is_at_end() {
             match self.statement() {
                 Ok(statement) => statements.push(statement),
                 Err(err) => {
                     self.push_error(err);
                     self.synchronize();
-                },
+                }
             }
         }
 
@@ -127,7 +281,7 @@ impl<'a> Parser<'a> {
     fn statement(&mut self) -> Result<ast::Statement<'a>> {
         use ast::Statement as S;
 
-        Ok (match self.next().token_type {
+        Ok(match self.next().token_type {
             Class => S::Class(self.class()?),
             Abstract => S::AbstractClass(self.abstract_class()?),
             Interface => S::Interface(self.interface()?),
@@ -141,19 +295,16 @@ impl<'a> Parser<'a> {
             // Note: for macros, everything that's some kind of statement is going to need to check when a macro is invoked,
             // And hand control over to it instead.
             // Note: private modules/namespaces may be added later
-            _ => return Err(Error::Other("Expected statement, got WHATEVER".to_owned()))
+            unexpected => return Err(Error::UnexpectedInContext("statement", unexpected)),
         })
     }
-    
+
     fn class(&mut self) -> Result<ast::Class<'a>> {
         let name = self.identifier()?;
-        
+
         let generics = self.generic_params()?;
 
-        let mut parent = None;
-        if self.is_next(Of) {
-            parent = Some(self.named_type()?);
-        }
+        let parent = self.if_next(Of, Self::parse_type)?;
 
         let mut with = Vec::with_capacity(2);
         if self.is_next(With) {
@@ -165,61 +316,41 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let body = self.class_body()?;
+        let body = self.block(Self::class_statement)?;
 
         return Ok(ast::Class {
             generics,
             name,
             parent,
             with,
-            body
-        })
+            body,
+        });
     }
 
     /// Parse generic parameters for a new type
     fn generic_params(&mut self) -> Result<Vec<ast::Generic<'a>>> {
-        let mut generics = Vec::new();
         if self.is_next(Less) {
-            loop {
-                let name = self.identifier()?;
-
-                let mut supertype = None;
-                if self.is_next(Colon) {
-                    supertype = Some(self.parse_type()?);
-                }
-
-                let mut default_type = None;
-                if self.is_next(Equals) {
-                    default_type = Some(self.parse_type()?);
-                }
-
-                generics.push(ast::Generic {
-                    name,
-                    supertype,
-                    default_type
-                });
-
-                if !self.is_next(Comma) {
-                    break;
-                }
-            }
-            self.consume(Greater)?;
+            self.cs_list1(Self::generic_param, Greater)
+        } else {
+            Ok(vec![])
         }
+    }
 
-        return Ok(generics);
+    fn generic_param(&mut self) -> Result<ast::Generic<'a>> {
+        Ok(ast::Generic {
+            name: self.identifier()?,
+            supertype: self.if_next(Colon, Self::parse_type)?,
+            default_type: self.if_next(Equals, Self::parse_type)?,
+        })
     }
 
     /// Parse a list of types as arguments to a generic
     fn generic_arguments(&mut self) -> Result<Vec<ast::Type<'a>>> {
-        let mut generics = Vec::new();
-
         if self.is_next(Less) {
-            self.type_list(&mut generics)?;
-            
-            self.consume(Greater);
+            self.cs_list1(Self::parse_type, Greater)
+        } else {
+            Ok(vec![])
         }
-        
-        return Ok(generics);
     }
 
     fn parse_type(&mut self) -> Result<ast::Type<'a>> {
@@ -227,40 +358,24 @@ impl<'a> Parser<'a> {
     }
 
     fn type_union(&mut self) -> Result<ast::Type<'a>> {
-        let mut types = vec![self.type_intersection()?];
-
-        while self.is_next(Pipe) {
-            types.push(self.type_intersection()?);
-        }
-        
-        Ok(if types.len() == 1 {
-            types[0].clone()
-        } else {
-            ast::Type::Union(types)
-        })        
+        Ok(self
+            .separated_while1(Pipe, Self::type_intersection)?
+            .first_or(ast::Type::Union))
     }
 
     fn type_intersection(&mut self) -> Result<ast::Type<'a>> {
-        let mut types = vec![self.type_literal()?];
-
-        while self.is_next(Pipe) {
-            types.push(self.type_literal()?);
-        }
-        
-        Ok(if types.len() == 1 {
-            types[0].clone()
-        } else {
-            ast::Type::Intersection(types)
-        })        
+        Ok(self
+            .separated_while1(Ampersand, Self::type_literal)?
+            .first_or(ast::Type::Union))
     }
 
     fn type_literal(&mut self) -> Result<ast::Type<'a>> {
         let mut item_type = if let Ok(named) = self.named_type() {
             if self.is_next(LeftBrace) {
-                let body = self.class_body()?;
+                let body = self.block(Self::class_statement)?;
                 let object = ast::ObjectType {
                     body,
-                    supertype: Some(Box::new(named))
+                    supertype: Some(Box::new(named)),
                 };
                 ast::Type::Object(object)
             } else {
@@ -270,49 +385,38 @@ impl<'a> Parser<'a> {
             match self.peek().token_type {
                 Fn => {
                     self.next();
-                    ast::Type::Function(
-                        self.function_type()?
-                    )
-                },
+                    ast::Type::Function(self.function_type()?)
+                }
                 Ampersand => {
                     self.next();
-                    ast::Type::Reference(Box::new(
-                        self.type_literal()?
-                    ))
-                },
+                    ast::Type::Reference(Box::new(self.type_literal()?))
+                }
                 Star => {
                     self.next();
-                    ast::Type::Pointer(Box::new(
-                        self.type_literal()?
-                    ))
-                },
+                    ast::Type::Pointer(Box::new(self.type_literal()?))
+                }
                 LeftParen => {
                     self.next();
-                    let tuple = self.tuple_type()?;
-                    if tuple.len() == 1 {
-                        tuple[0].clone()
-                    } else {
-                        ast::Type::Tuple(tuple)
-                    }
-                },
+                    self.tuple_type()?.first_or(ast::Type::Tuple)
+                }
                 LeftBrace => {
                     self.next();
-                    let body = self.class_body()?;
+                    let body = self.block(Self::class_statement)?;
                     let object = ast::ObjectType {
                         body,
                         supertype: None,
                     };
                     ast::Type::Object(object)
-                },
-                _ => ast::Type::Literal(self.literal()?)
+                }
+                _ => ast::Type::Literal(self.literal()?),
             }
         };
-        
+
         // TODO: wrap in range type
 
         return Ok(self.wrap_array_type(item_type)?);
     }
-    
+
     fn wrap_array_type(&mut self, item_type: ast::Type<'a>) -> Result<ast::Type<'a>> {
         Ok(if self.is_next(LeftBracket) {
             if !self.check(RightBracket) {
@@ -327,7 +431,7 @@ impl<'a> Parser<'a> {
             item_type
         })
     }
-    
+
     fn named_type(&mut self) -> Result<ast::Type<'a>> {
         use ast::Type;
 
@@ -335,20 +439,17 @@ impl<'a> Parser<'a> {
             let path = self.type_path(vec![])?;
             let generics = self.generic_arguments()?;
 
-            return Ok(Type::SelfKeyword{
-                path,
-                generics
-            });
+            return Ok(Type::SelfKeyword { path, generics });
         } else if let Ok(name) = self.identifier() {
             let path = self.type_path(vec![name])?;
             let generics = self.generic_arguments()?;
 
-            return Ok(Type::Named {
-                path,
-                generics
-            });
+            return Ok(Type::Named { path, generics });
         } else {
-            return Err(Error::UnexpectedInContext("named type", self.peek().token_type));
+            return Err(Error::UnexpectedInContext(
+                "named type",
+                self.peek().token_type,
+            ));
         }
     }
 
@@ -365,72 +466,30 @@ impl<'a> Parser<'a> {
         self.consume(Fn)?;
         let name = self.identifier()?;
         let generics = self.generic_params()?;
-                
-        let mut parameters = Vec::new();
-        self.consume(LeftParen);
-        if !self.check(RightParen) {
-            // TODO: perhaps allow consuming "else" to create a catch-all for functions of all arity-s
-            loop {
-                let parameter = self.match_clause()?;
-                parameters.push(parameter);
 
-                if !self.is_next(Comma) {
-                    break ;
-                }
-            }
-        }
-        self.consume(RightParen);
+        self.consume(LeftParen)?;
+        let parameters = self.cs_list0(Self::match_clause, RightParen)?;
+        let return_type = self.if_next(Colon, Self::parse_type)?;
 
-        let mut return_type = None;
-        if self.is_next(Colon) {
-            return_type = Some(self.parse_type()?);
-        }
-
-        return Ok(ast::FunctionDeclaration {
+        Ok(ast::FunctionDeclaration {
             name,
             generics,
             parameters,
-            return_type
+            return_type,
         })
     }
 
+    /// Does not assume `Let` is consumed
     fn let_variable(&mut self) -> Result<ast::LetStatement<'a>> {
-        self.consume(Let);
-        let clause = self.match_clause()?;
-
-
-        let mut value = None;
-        if self.is_next(Equals) {
-            value = Some(self.expression()?);
-        }
-        
-        return Ok(ast::LetStatement {
-            clause,
-            value
+        self.consume(Let)?;
+        Ok(ast::LetStatement {
+            clause: self.match_clause()?,
+            value: self.if_next(Equals, Self::expression)?,
         })
-    }
-
-    fn expression_list(&mut self) -> Result<Vec<ast::Expression<'a>>> {
-        let mut expressions = Vec::new();
-
-        loop {
-            expressions.push(self.expression()?);
-            
-            if !self.is_next(Comma) {
-                return Ok(expressions);
-            }
-        }
     }
 
     fn array_literal(&mut self) -> Result<Vec<ast::Expression<'a>>> {
-        let array = if !self.check(RightBracket) {
-            self.expression_list()?
-        } else {
-            vec![]
-        };
-
-        self.consume(RightBracket)?;
-        return Ok(array);
+        self.cs_list0(Self::expression, RightBracket)
     }
 
     fn number(&mut self, number: Token<'a>) -> Result<ast::Literal<'a>> {
@@ -438,23 +497,24 @@ impl<'a> Parser<'a> {
 
         let (mapping, radix): (&fn(char, u32) -> Option<u32>, u64) = match number.token_type {
             Base64 => (&(base_64 as CharMapper), 64),
-                Base36 => (&(char::to_digit as CharMapper), 36),
-                Base32 => (&(char::to_digit as fn(char, u32) -> Option<u32>), 32),
-                Hexadecimal => (&(char::to_digit as CharMapper), 16),
-                Decimal => (&(char::to_digit as CharMapper), 10),
-                Octal => (&(char::to_digit as CharMapper), 8),
-                Quadal => (&(char::to_digit as CharMapper), 4),
-                Binary => (&(char::to_digit as CharMapper), 2),
-                _ => return Err(Error::Other(format!("Expected primary expression, got \"{}\".", number.lexeme)))
+            Base36 => (&(char::to_digit as CharMapper), 36),
+            Base32 => (&(char::to_digit as fn(char, u32) -> Option<u32>), 32),
+            Hexadecimal => (&(char::to_digit as CharMapper), 16),
+            Decimal => (&(char::to_digit as CharMapper), 10),
+            Octal => (&(char::to_digit as CharMapper), 8),
+            Quadal => (&(char::to_digit as CharMapper), 4),
+            Binary => (&(char::to_digit as CharMapper), 2),
+            _ => {
+                return Err(Error::Other(format!(
+                    "Expected primary expression, got \"{}\".",
+                    number.lexeme
+                )));
+            }
         };
-        
+
         let lexeme = number.lexeme;
         if lexeme.len() == 1 {
-            let output = lexeme.chars()
-                .next()
-                .unwrap()
-                .to_digit(10)
-                .unwrap();
+            let output = lexeme.chars().next().unwrap().to_digit(10).unwrap();
             return Ok(ast::Literal::Integer(output as u64));
         }
 
@@ -481,20 +541,19 @@ impl<'a> Parser<'a> {
     }
 
     fn literal(&mut self) -> Result<ast::Literal<'a>> {
+        use ast::Literal as Lit;
+
         Ok(match self.next().token_type {
-            Nil => ast::Literal::Nil,
-            False => ast::Literal::False,
-            True => ast::Literal::True,
+            Nil => Lit::Nil,
+            False => Lit::False,
+            True => Lit::True,
             String => self.parse_string(self.previous())?,
-            LeftParen => {
-                let tuple = self.expression_list()?;
-                self.consume(RightParen);
-                ast::Literal::Tuple(tuple)
-            },
-            LeftBracket => ast::Literal::Array(self.array_literal()?),
+            LeftParen => Lit::Tuple(self.cs_list1(Self::expression, RightParen)?),
+            LeftBracket => Lit::Array(self.array_literal()?),
             // Note: I was originally going to use braces for both blocks an objects, but now I might just add a new keyword
-            LeftBrace => ast::Literal::Object(self.object_literal()?),
-            number_type => self.number(self.previous())?
+            LeftBrace => Lit::Object(self.object_literal()?),
+            // Todo: create a singular number token with a separate number type
+            number_type => self.number(self.previous())?,
         })
     }
 
@@ -502,7 +561,7 @@ impl<'a> Parser<'a> {
         if let Ok(name) = self.identifier() {
             return Ok(ast::Expression::Identifier(name));
         }
-        
+
         let literal = self.literal()?;
         if let ast::Literal::Tuple(ref tuple) = literal {
             if tuple.len() == 1 {
@@ -514,23 +573,10 @@ impl<'a> Parser<'a> {
     }
 
     fn finish_call(&mut self, expr: ast::Expression<'a>) -> Result<ast::Expression<'a>> {
-        let mut arguments = Vec::new();
-
-        if !self.check(RightParen) {
-            loop {
-                arguments.push(self.expression()?);
-
-                if !self.is_next(Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(RightParen)?;
-
-        return Ok(ast::Expression::FunctionCall {
+        Ok(ast::Expression::FunctionCall {
             function: Box::new(expr),
-            arguments
-        });
+            arguments: self.cs_list0(Self::expression, RightParen)?,
+        })
     }
 
     fn function_call(&mut self) -> Result<ast::Expression<'a>> {
@@ -545,13 +591,16 @@ impl<'a> Parser<'a> {
                 } else if self.is_next(Star) {
                     expr = ast::Expression::Dereference(Box::new(expr));
                 } else {
-                    return Err(Error::UnexpectedInContext("field access", self.peek().token_type));
+                    return Err(Error::UnexpectedInContext(
+                        "field access",
+                        self.peek().token_type,
+                    ));
                 }
             } else {
                 break;
             }
         }
-        
+
         return Ok(expr);
     }
 
@@ -560,34 +609,31 @@ impl<'a> Parser<'a> {
         let target_expr = self.function_call()?;
         self.consume(Equals)?;
         let value = self.expression()?;
-        
-        use ast::{Expression as Expr, AssignmentTarget::*};
+
+        use ast::{AssignmentTarget::*, Expression as Expr};
         let target = match target_expr {
             Expr::Identifier(i) => Variable(i),
             Expr::Field(object, field) => Field(*object, field),
             Expr::Subscript { array, index } => Subscript {
                 array: *array,
-                index: *index
+                index: *index,
             },
             Expr::Dereference(target) => Dereference(*target),
-            _ => return Err(Error::InvalidLeftValue(possibly_invalid_token.token_type))
+            _ => return Err(Error::InvalidLeftValue(possibly_invalid_token.token_type)),
         };
-        
-        return Ok(ast::Assignment {
-            target,
-            value
-        });
+
+        return Ok(ast::Assignment { target, value });
     }
 
     fn return_statement(&mut self) -> Result<Option<ast::Expression<'a>>> {
         self.consume(Return)?;
-        return Ok(self.expression().ok());
+        Ok(self.expression().ok())
     }
 
     /// Does not consume tokens
     fn function_statement(&mut self) -> Result<ast::FunctionStatement<'a>> {
         use ast::FunctionStatement as Stmt;
-        
+
         Ok(match self.peek().token_type {
             Let => Stmt::Let(self.let_variable()?),
             Forever => Stmt::Forever(self.forever()?),
@@ -603,47 +649,30 @@ impl<'a> Parser<'a> {
                     Stmt::Expression(self.expression()?)
                 }
             }
-            unexpected => return Err(Error::UnexpectedInContext("function statemetnt", unexpected))
+            _ => Stmt::Expression(self.expression()?)
         })
     }
-    
-    fn function_body(&mut self) -> Result<ast::Block<'a>> {
-        self.consume(LeftBrace)?;
 
-        let mut statements = Vec::new();
-        while !self.check(RightBrace) {
-            statements.push(self.function_statement()?);
-        }
-        self.consume(RightBrace)?;
-        
-        return Ok(ast::Block {
-            statements
-        })
-    }
-    
     /// Assumes `Fn` is already consumed
     fn function(&mut self) -> Result<ast::FunctionDefinition<'a>> {
-        let declaration = self.function_declaration()?;
-        let body = self.function_body()?;
-        
-        return Ok(ast::FunctionDefinition {
-            declaration,
-            body
-        });
+        Ok(ast::FunctionDefinition { 
+            declaration: self.function_declaration()?,
+            body: self.block(Self::function_statement)?
+        })
     }
-    
+
     fn object_literal(&mut self) -> Result<Vec<(ast::Identifier<'a>, ast::Expression<'a>)>> {
         let mut fields = Vec::new();
 
         loop {
             let field = self.identifier()?;
-            
+
             let value = if self.is_next(Equals) {
                 self.expression()?
             } else {
                 ast::Expression::Identifier(field.clone())
             };
-            
+
             fields.push((field, value));
 
             if self.is_next(Comma) {
@@ -652,104 +681,67 @@ impl<'a> Parser<'a> {
         }
 
         self.consume(RightBrace)?;
-        return Ok(fields)
+        return Ok(fields);
     }
-    
+
     fn abstract_class(&mut self) -> Result<ast::AbstractClass<'a>> {
-        self.consume(Class);
-
-        let name = self.identifier()?;
-        
-        let generics = self.generic_params()?;
-
-        let mut parent = None;
-        if self.is_next(Of) {
-            parent = Some(self.named_type()?);
-        }
-
-        let mut with = Vec::with_capacity(2);
-        if self.is_next(With) {
-
-            loop {
-                with.push(self.named_type()?);
-                if !self.is_next(Comma) {
-                    break;
-                }
-            }
-        }
-
-        let body = self.interface_body()?;
-
-        return Ok(ast::AbstractClass {
-            generics,
-            name,
-            parent,
-            with,
-            body
+        self.consume(Class)?;
+        Ok(ast::AbstractClass {
+            name: self.identifier()?,
+            generics: self.generic_params()?,
+            parent: self.if_next(Of, Self::parse_type)?,
+            with: self
+                .if_next(With, |p| p
+                    .separated_while1(Comma, Self::named_type))?
+                .unwrap_or_else(Vec::new),
+            body: self.block(Self::interface_statement)?
         })
     }
-    
-    fn interface_body(&mut self) -> Result<ast::InterfaceBody<'a>> {
-        self.consume(LeftBrace)?;
 
-        let mut statements = Vec::new();
-        while !self.is_next(RightBrace) {
-            use ast::InterfaceStatement as Stmt;
+    fn interface_statement(&mut self) -> Result<ast::InterfaceStatement<'a>> {
+        use ast::InterfaceStatement as Stmt;
 
-            let statement = match self.next().token_type {
-                Identifier => Stmt::Field(self.field()?),
-                Type => {
-                    let name = self.identifier()?;
-                    if self.is_next(Equals) {
-                        let item_type = self.parse_type()?;
-                        Stmt::TypeDefinition { name, item_type }
-                    } else {
-                        Stmt::TypeRequirement(name)
-                    }
-                },
-                Fn => Stmt::Method(self.function()?),
-                Static => match self.next().token_type {
-                    Fn => Stmt::StaticMethod(self.function()?),
-                    // TODO: replace `Either` with `InterfaceStatement`
-                    Identifier => self.partial_static_field()?.either(Stmt::StaticRequirement, Stmt::StaticDefinition),
-                    unexpected => return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected))
-                },
-                unexpected => return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected))
-            };
-
-            statements.push(statement);
-        }
-
-
-        return Ok(ast::InterfaceBody { statements });
+        Ok(match self.next().token_type {
+            Identifier => Stmt::Field(self.field()?),
+            Type => {
+                let name = self.identifier()?;
+                if self.is_next(Equals) {
+                    let item_type = self.parse_type()?;
+                    Stmt::TypeDefinition { name, item_type }
+                } else {
+                    Stmt::TypeRequirement(name)
+                }
+            }
+            Fn => Stmt::Method(self.function()?),
+            Static => match self.next().token_type {
+                Fn => Stmt::StaticMethod(self.function()?),
+                Identifier => self.partial_static_field()?,
+                unexpected => {
+                    return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected));
+                }
+            },
+            unexpected => {
+                return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected));
+            }
+        })
     }
-    
-    fn class_body(&mut self) -> Result<ast::ClassBody<'a>> {
-        self.consume(LeftBrace)?;
 
-        let mut statements = Vec::new();
-        while !self.is_next(RightBrace) {
-            use ast::ClassStatement as Stmt;
+    fn class_statement(&mut self) -> Result<ast::ClassStatement<'a>> {
+        use ast::ClassStatement as Stmt;
 
-            let statement = match self.next().token_type {
-                Identifier => Stmt::Field(self.field()?),
-                Type => Stmt::TypeDefinition(self.type_definition()?),
-                Fn => Stmt::Method(self.function()?),
-                Static => match self.next().token_type {
-                    Fn => Stmt::StaticMethod(self.function()?),
-                    Identifier => Stmt::StaticField(self.static_field()?),
-                    unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected))
-                },
-                unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected))
-            };
-
-            statements.push(statement);
-        }
-
-
-        return Ok(ast::ClassBody { statements });
+        Ok(match self.next().token_type {
+            Identifier => Stmt::Field(self.field()?),
+            Type => Stmt::TypeDefinition(self.type_definition()?),
+            Fn => Stmt::Method(self.function()?),
+            Static => match self.next().token_type {
+                Fn => Stmt::StaticMethod(self.function()?),
+                Identifier => Stmt::StaticField(self.static_field()?),
+                unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected)),
+            },
+            unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected)),
+        })
     }
-    
+
     /// Assumes `Identifier` was consumed
     fn field(&mut self) -> Result<ast::Field<'a>> {
         let name = ast::Identifier(self.previous());
@@ -758,14 +750,13 @@ impl<'a> Parser<'a> {
 
         let item_type = self.type_literal()?;
 
-        return Ok(ast::Field {
-            name,
-            item_type
-        });
+        return Ok(ast::Field { name, item_type });
     }
-    
-    /// Assumes `Identifier` is already consumes
-    fn partial_static_field(&mut self) -> Result<Either<ast::PartialStaticField<'a>, ast::StaticField<'a>>> {
+
+    /// Assumes `Identifier` was consumed
+    fn partial_static_field(&mut self) -> Result<ast::InterfaceStatement<'a>> {
+        use ast::InterfaceStatement as Stmt;
+
         let name = ast::Identifier(self.previous());
 
         self.consume(Colon)?;
@@ -773,32 +764,32 @@ impl<'a> Parser<'a> {
 
         if self.is_next(Equals) {
             let value = self.expression()?;
-            
-            return Ok(Right(ast::StaticField {
+
+            return Ok(Stmt::StaticDefinition(ast::StaticField {
                 name,
                 item_type,
-                value
+                value,
             }));
         }
 
-        return Ok(Left(ast::PartialStaticField {
+        return Ok(Stmt::StaticRequirement(ast::PartialStaticField {
             name,
-            item_type
+            item_type,
         }));
     }
-    
+
     fn type_definition(&mut self) -> Result<ast::TypeDefinition<'a>> {
         let name = self.identifier()?;
         let generics = self.generic_params()?;
         let type_value = self.type_literal()?;
 
-        return Ok (ast::TypeDefinition {
+        return Ok(ast::TypeDefinition {
             name,
             generics,
-            type_value
+            type_value,
         });
     }
-    
+
     fn use_statement(&mut self) -> Result<ast::UsePath<'a>> {
         use ast::UsePath;
 
@@ -819,10 +810,13 @@ impl<'a> Parser<'a> {
         } else if self.is_next(Star) {
             return Ok(UsePath::Wildcard);
         } else {
-            return Err(Error::UnexpectedInContext("use statement", self.peek().token_type));
+            return Err(Error::UnexpectedInContext(
+                "use statement",
+                self.peek().token_type,
+            ));
         }
     }
-    
+
     fn use_block(&mut self) -> Result<Vec<ast::UsePath<'a>>> {
         use ast::UsePath;
 
@@ -848,79 +842,86 @@ impl<'a> Parser<'a> {
             } else if self.is_next(Star) {
                 block.push(UsePath::Wildcard);
             } else {
-                return Err(Error::UnexpectedInContext("use block", self.peek().token_type));
+                return Err(Error::UnexpectedInContext(
+                    "use block",
+                    self.peek().token_type,
+                ));
             }
-            
+
             if !self.is_next(Comma) {
                 break;
             }
         }
-        
+
         return Ok(block);
     }
-    
+
     fn forever(&mut self) -> Result<ast::Block<'a>> {
         self.consume(Forever)?;
-        return self.function_body();
+        return self.block(Self::function_statement);
     }
-    
+
     fn while_statement(&mut self) -> Result<ast::WhileStatement<'a>> {
         self.consume(While)?;
 
         let condition = self.expression()?;
 
-        let body = self.function_body()?;
+        let body = self.block(Self::function_statement)?;
 
         let mut else_branch = None;
         if self.is_next(Else) {
-            else_branch = Some(self.function_body()?);
+            else_branch = Some(self.block(Self::function_statement)?);
         }
-        
+
         return Ok(ast::WhileStatement {
             condition,
             body,
-            else_branch
+            else_branch,
         });
     }
-    
+
     fn for_statement(&mut self) -> Result<ast::ForStatement<'a>> {
         self.consume(For)?;
 
         if let Ok(loop_variable) = self.match_clause() {
             if self.is_next(In) {
                 let iterator = self.expression()?;
-                let body = self.function_body()?;
+                let body = self.block(Self::function_statement)?;
 
                 return Ok(ast::ForStatement {
                     loop_variable: Some(loop_variable),
                     iterator,
-                    body
+                    body,
                 });
             } else {
-                let body = self.function_body()?;
+                let body = self.block(Self::function_statement)?;
 
                 return Ok(ast::ForStatement {
                     loop_variable: None,
-                    iterator: loop_variable.as_literal()
+                    iterator: loop_variable
+                        .as_literal()
                         .map(ast::Expression::Literal)
                         .ok_or_else(|| Error::Other("Invalid literal in for loop.".to_owned()))?,
-                    body
+                    body,
                 });
             }
         }
 
         let iterator = self.expression()?;
-        let body = self.function_body()?;
+        let body = self.block(Self::function_statement)?;
 
         return Ok(ast::ForStatement {
             loop_variable: None,
             iterator,
-            body
+            body,
         });
     }
-    
+
     /// Assumes the head of the path is already consumed
-    fn type_path(&mut self, mut path: Vec<ast::Identifier<'a>>) -> Result<Vec<ast::Identifier<'a>>> {
+    fn type_path(
+        &mut self,
+        mut path: Vec<ast::Identifier<'a>>,
+    ) -> Result<Vec<ast::Identifier<'a>>> {
         while self.is_next(Dot) {
             let name = self.identifier()?;
             path.push(name);
@@ -928,7 +929,7 @@ impl<'a> Parser<'a> {
 
         return Ok(path);
     }
-    
+
     fn or(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.and()?;
 
@@ -936,32 +937,32 @@ impl<'a> Parser<'a> {
             let right = self.and()?;
             expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
         }
-        
+
         return Ok(expr);
     }
-    
+
     fn and(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.equality()?;
-        
+
         while let Ok(operator) = self.consume(And) {
             let right = self.equality()?;
             expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
         }
-        
+
         return Ok(expr);
     }
-    
-    fn equality(&mut self) -> Result<ast::Expression<'a>>  {
+
+    fn equality(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.comparison()?;
 
         while let Some(operator) = self.matches(&[BangEquals, EqualsEquals]) {
             let right = self.comparison()?;
             expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
         }
-        
+
         return Ok(expr);
     }
-    
+
     fn comparison(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.term()?;
 
@@ -970,10 +971,10 @@ impl<'a> Parser<'a> {
             let right = self.term()?;
             expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
         }
-        
+
         return Ok(expr);
     }
-    
+
     fn term(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.factor()?;
 
@@ -984,7 +985,7 @@ impl<'a> Parser<'a> {
 
         return Ok(expr);
     }
-    
+
     fn factor(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.unary()?;
 
@@ -992,26 +993,26 @@ impl<'a> Parser<'a> {
             let right = self.unary()?;
             expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
         }
-        
+
         return Ok(expr);
     }
-    
+
     fn unary(&mut self) -> Result<ast::Expression<'a>> {
         if let Some(operator) = self.matches(&[Not, Minus]) {
             let right = self.unary()?;
             return Ok(ast::Expression::Unary(operator, Box::new(right)));
         }
-        
+
         return self.function_call();
     }
-    
+
     fn parse_string(&self, string: Token<'a>) -> Result<ast::Literal<'a>> {
         use ast::InterpolatedStringPiece::*;
 
         // TODO: create a special scanner for a string that allows scanning both Eris statements and custom syntax
         let lexeme = string.lexeme;
         let mut pieces = Vec::with_capacity(2);
-        
+
         let mut start = 1;
         let mut is_escape = false;
         for (i, c) in lexeme.chars().enumerate().skip(1) {
@@ -1024,136 +1025,116 @@ impl<'a> Parser<'a> {
                 '\\' => {
                     pieces.push(Literal(&lexeme[start..i]));
                     is_escape = true;
-                },
+                }
                 '"' => {
                     pieces.push(Literal(&lexeme[start..i]));
-                },
+                }
                 _ => {}
             }
             start = i;
         }
 
-        return Ok(ast::Literal::String(ast::InterpolatedString{
+        return Ok(ast::Literal::String(ast::InterpolatedString {
             token: string,
-            pieces
+            pieces,
         }));
     }
-    
+
     fn interface(&mut self) -> Result<ast::Interface<'a>> {
-        let name = self.identifier()?;
-
-        let generics = self.generic_params()?;
-        
-        let mut parent = None;
-        if self.is_next(Of) {
-            parent = Some(self.named_type()?);
-        }
-        
-        let body = self.interface_body()?;
-
-        return Ok(ast::Interface {
-            name,
-            generics,
-            parent,
-            body
+        Ok(ast::Interface {
+            name: self.identifier()?,
+            generics: self.generic_params()?,
+            parent: self.if_next(Of, Self::named_type)?,
+            body: self.block(Self::interface_statement)?,
         })
     }
-    
+
     fn mixin(&mut self) -> Result<ast::Mixin<'a>> {
         Ok(ast::Mixin {
             name: self.identifier()?,
             generics: self.generic_params()?,
-            body: self.class_body()?
+            body: self.block(Self::class_statement)?,
         })
     }
-    
+
     fn extend_with(&mut self) -> Result<ast::ExtendWith<'a>> {
         let extend = self.type_literal()?;
+        let with = self.if_next(With, Self::named_type)?;
+        let body = self.block(Self::class_statement)?;
 
-        let mut with = None;
-        if self.is_next(With) {
-            with = Some(self.named_type()?);
-        }
-        
-        let body = self.class_body()?;
-
-        return Ok(ast::ExtendWith{
-            extend,
-            with,
-            body
-        })
+        return Ok(ast::ExtendWith { extend, with, body });
     }
-    
+
     fn enum_statement(&mut self) -> Result<ast::Enum<'a>> {
         let name = self.identifier()?;
-
         let generics = self.generic_params()?;
 
-        let mut body = Vec::with_capacity(2);
         self.consume(LeftBrace)?;
 
-        loop {
-            use ast::EnumValue as Value;
-            
-            let discriminant = self.identifier()?;
-            let value = match self.peek().token_type {
-                Equals => {
-                    self.next();
-                    if let Ok(constant) = self.identifier() {
-                        Value::NamedConstant(constant)
-                    } else {
-                        let literal = self.literal()?;
-                        Value::Value(literal)
-                    }
-                },
-                LeftParen => {
-                    self.next();
-                    Value::Tuple(self.tuple_type()?)
-                },
-                LeftBrace => {
-                    self.next();
-                    Value::Object(self.object_type()?)
-                },
-                _ => Value::None
-            };
+        let body = self.cs_list0(Self::enum_value, RightBrace)?;
 
-            body.push((discriminant, value));
-
-            if !self.is_next(Comma) {
-                break;
-            }
-        }
-        self.consume(RightBrace);
-        
-        return Ok(ast::Enum{
+        return Ok(ast::Enum {
             name,
             generics,
-            body
+            body,
         });
     }
-    
+
+    fn enum_value(&mut self) -> Result<(ast::Identifier<'a>, ast::EnumValue<'a>)> {
+        use ast::EnumValue as Value;
+
+        let name = self.identifier()?;
+        let value = match self.peek().token_type {
+            Equals => {
+                self.next();
+                if let Ok(constant) = self.identifier() {
+                    Value::NamedConstant(constant)
+                } else {
+                    let literal = self.literal()?;
+                    // TODO: maybe just make the value a constant expression
+                    Value::Value(literal)
+                }
+            }
+            LeftParen => {
+                self.next();
+                Value::Tuple(self.tuple_type()?)
+            }
+            LeftBrace => {
+                self.next();
+                Value::Object(self.object_type()?)
+            }
+            _ => Value::None,
+        };
+
+        return Ok((name, value));
+    }
+
     fn constant(&mut self) -> Result<ast::ConstAssignment<'a>> {
         let name = self.identifier()?;
 
-        self.consume(Colon);
+        self.consume(Colon)?;
         let item_type = self.type_literal()?;
 
-        self.consume(Equals);
+        self.consume(Equals)?;
         let value = self.expression()?;
-        
+
         return Ok(ast::ConstAssignment {
             name,
             item_type,
-            value
+            value,
         });
     }
-    
+
     fn match_clause(&mut self) -> Result<ast::MatchClause<'a>> {
         // Try to consume identifier as a type, since a valid identifier is a valid type
         let mut item_type = None;
 
         let name = if let Ok(type_or_name) = self.type_literal() {
-            if let ast::Type::Named { ref path, ref generics } = type_or_name {
+            if let ast::Type::Named {
+                ref path,
+                ref generics,
+            } = type_or_name
+            {
                 if generics.len() == 0 && path.len() == 1 {
                     Some(path[0].clone())
                 } else {
@@ -1161,7 +1142,7 @@ impl<'a> Parser<'a> {
                     None
                 }
             } else {
-                return Err(Error::InvalidMatchClause)
+                return Err(Error::InvalidMatchClause);
             }
         } else {
             Some(self.identifier()?)
@@ -1176,21 +1157,19 @@ impl<'a> Parser<'a> {
         } else {
             self.destructure().ok()
         };
-        
-        if item_type.is_none() {
-            
-        }
+
+        if item_type.is_none() {}
 
         let guard_clause = self.if_condition().ok();
-        
+
         return Ok(ast::MatchClause {
             name,
             destructure,
             item_type,
-            guard_clause
-        })
+            guard_clause,
+        });
     }
-    
+
     fn if_condition(&mut self) -> Result<ast::Expression<'a>> {
         let invert_condition = if self.is_next(Unless) {
             true
@@ -1202,99 +1181,70 @@ impl<'a> Parser<'a> {
 
         let mut condition = self.expression()?;
         if invert_condition {
-            let not_token = Token{
+            let not_token = Token {
                 token_type: TokenType::Not,
-                lexeme
+                lexeme,
             };
             condition = ast::Expression::Unary(not_token, Box::new(condition));
         }
-        
+
         return Ok(condition);
     }
-    
+
     fn break_statement(&mut self) -> Result<ast::BreakStatement<'a>> {
         self.consume(Break)?;
-        
-        let mut label = None;
-        if self.is_next(Colon) {
-            label = Some(self.identifier()?);
-        }
-        
-        let value = self.expression().ok();
 
-        return Ok(ast::BreakStatement {
-            label,
-            value
-        });
+        Ok(ast::BreakStatement {
+            label: self.if_next(Colon, Self::identifier)?,
+            value: self.expression().ok(),
+        })
     }
-    
+
     fn continue_statement(&mut self) -> Result<Option<ast::Identifier<'a>>> {
         self.consume(Continue)?;
 
-        let mut label = None;
-        if self.is_next(Colon) {
-            label = Some(self.identifier()?);
-        }
-        
-        return Ok(label);
+        return self.if_next(Colon, Self::identifier);
     }
-    
+
     fn destructure(&mut self) -> Result<ast::Destructure<'a>> {
         todo!()
     }
-    
+
     // Assumes `Static Identifier` is already consumed
     fn static_field(&mut self) -> Result<ast::StaticField<'a>> {
         let name = ast::Identifier(self.previous());
 
         self.consume(Colon)?;
         let item_type = self.type_literal()?;
-        
+
         self.consume(Equals)?;
         let value = self.expression()?;
 
         return Ok(ast::StaticField {
             name,
             item_type,
-            value
+            value,
         });
     }
-    
-    /// Consumes a comma separated list of type literals and pushes them onto the provided vec of types
-    fn type_list(&mut self, types: &mut Vec<ast::Type<'a>>) -> Result<()> {
-        loop {
-            let item_type = self.parse_type()?;
-            types.push(item_type);
 
-            if !self.is_next(Comma) {
-                return Ok(());
-            }
-        }
-    }
-    
     /// Assumes "(" is already consumed
     fn tuple_type(&mut self) -> Result<Vec<ast::Type<'a>>> {
-        let mut types = Vec::new();
-        if !self.is_next(RightParen) {
-            self.type_list(&mut types)?;
-        }
-
-        self.consume(RightParen)?;
-        return Ok(types);
+        self.cs_list0(Self::parse_type, RightParen)
     }
-    
+
     /// Parses an object type literal.
     /// Assumes "{" is already consumed
     fn object_type(&mut self) -> Result<Vec<(ast::Identifier<'a>, ast::Type<'a>)>> {
+        // TODO: change this to be something more reasonable
         let mut fields = Vec::new();
-        
+
         loop {
             let name = self.identifier()?;
             self.consume(Colon)?;
             let field_type = self.parse_type()?;
-            
+
             fields.push((name, field_type));
-            
+
             if !self.is_next(Comma) {
                 break;
             }
@@ -1303,32 +1253,21 @@ impl<'a> Parser<'a> {
 
         return Ok(fields);
     }
-    
-    fn array_type(&mut self) -> Result<Vec<(ast::Type<'a>, Option<usize>)>> {
-        todo!()
-    }
-    
+
     fn function_type(&mut self) -> Result<ast::FunctionType<'a>> {
         self.consume(LeftParen)?;
-        let parameters = self.tuple_type()?;
-        
-        let return_type = if self.is_next(Colon) {
-            Some(Box::new(
-                self.parse_type()?
-            ))
-        } else {
-            None
-        };
 
-        return Ok(ast::FunctionType {
-            parameters,
-            return_type
-        });
+        Ok(ast::FunctionType {
+            parameters: self.tuple_type()?,
+            return_type: self.if_next(Colon, Self::parse_type)?.map(Box::new),
+        })
     }
 }
 
 fn get_char(string: &str, index: usize) -> Option<char> {
-    string.get(index..(index + 1)).and_then(|s| s.chars().next())
+    string
+        .get(index..(index + 1))
+        .and_then(|s| s.chars().next())
 }
 
 fn base_64(c: char, _: u32) -> Option<u32> {
@@ -1338,12 +1277,12 @@ fn base_64(c: char, _: u32) -> Option<u32> {
         '0'..='9' => 52 + (c as u32) - ('0' as u32),
         '+' => 62,
         '/' => 63,
-        _ => return None
+        _ => return None,
     })
 }
 
 pub enum Warning {
-    Other(std::string::String)
+    Other(std::string::String),
 }
 
 #[derive(Clone)]
@@ -1353,7 +1292,7 @@ pub enum Error {
     UnexpectedInContext(&'static str, TokenType),
     InvalidLeftValue(TokenType),
     InvalidMatchClause,
-    Other(std::string::String)
+    Other(std::string::String),
 }
 
 type Result<T> = std::result::Result<T, Error>;
