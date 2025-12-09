@@ -78,21 +78,27 @@ pub enum Type<'a> {
     },
     Interface(InterfaceBody<'a>),
     Tuple(Vec<Type<'a>>),
-    Object{
-        body: AbstractClassBody<'a>,
-        supertype: Option<Box<Type<'a>>>
-    },
-    Array(Box<Type<'a>>, usize),
+    Object(ObjectType<'a>),
+    Array(Box<Type<'a>>, Expression<'a>),
     Slice(Box<Type<'a>>),
     Reference(Box<Type<'a>>),
     Pointer(Box<Type<'a>>),
-    Function{
-        parameters: Vec<Type<'a>>,
-        // Defaults to nil
-        return_type: Option<Box<Type<'a>>>,
-    },
+    Function(FunctionType<'a>),
     Union(Vec<Type<'a>>),
+    Intersection(Vec<Type<'a>>),
     Literal(Literal<'a>),
+}
+
+#[derive(Clone)]
+pub struct FunctionType<'a> {
+    pub parameters: Vec<Type<'a>>,
+    pub return_type: Option<Box<Type<'a>>>
+}
+
+#[derive(Clone)]
+pub struct ObjectType<'a> {
+    pub body: ClassBody<'a>,
+    pub supertype: Option<Box<Type<'a>>>
 }
 
 #[derive(Clone)]

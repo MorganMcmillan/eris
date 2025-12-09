@@ -185,12 +185,12 @@ impl<'a> Parser<'a> {
 
                 let mut supertype = None;
                 if self.is_next(Colon) {
-                    supertype = Some(self.type_literal()?);
+                    supertype = Some(self.parse_type()?);
                 }
 
                 let mut default_type = None;
                 if self.is_next(Equals) {
-                    default_type = Some(self.type_literal()?);
+                    default_type = Some(self.parse_type()?);
                 }
 
                 generics.push(ast::Generic {
@@ -222,8 +222,110 @@ impl<'a> Parser<'a> {
         return Ok(generics);
     }
 
+    fn parse_type(&mut self) -> Result<ast::Type<'a>> {
+        self.type_union()
+    }
+
+    fn type_union(&mut self) -> Result<ast::Type<'a>> {
+        let mut types = vec![self.type_intersection()?];
+
+        while self.is_next(Pipe) {
+            types.push(self.type_intersection()?);
+        }
+        
+        Ok(if types.len() == 1 {
+            types[0].clone()
+        } else {
+            ast::Type::Union(types)
+        })        
+    }
+
+    fn type_intersection(&mut self) -> Result<ast::Type<'a>> {
+        let mut types = vec![self.type_literal()?];
+
+        while self.is_next(Pipe) {
+            types.push(self.type_literal()?);
+        }
+        
+        Ok(if types.len() == 1 {
+            types[0].clone()
+        } else {
+            ast::Type::Intersection(types)
+        })        
+    }
+
     fn type_literal(&mut self) -> Result<ast::Type<'a>> {
-        todo!()
+        let mut item_type = if let Ok(named) = self.named_type() {
+            if self.is_next(LeftBrace) {
+                let body = self.class_body()?;
+                let object = ast::ObjectType {
+                    body,
+                    supertype: Some(Box::new(named))
+                };
+                ast::Type::Object(object)
+            } else {
+                named
+            }
+        } else {
+            match self.peek().token_type {
+                Fn => {
+                    self.next();
+                    ast::Type::Function(
+                        self.function_type()?
+                    )
+                },
+                Ampersand => {
+                    self.next();
+                    ast::Type::Reference(Box::new(
+                        self.type_literal()?
+                    ))
+                },
+                Star => {
+                    self.next();
+                    ast::Type::Pointer(Box::new(
+                        self.type_literal()?
+                    ))
+                },
+                LeftParen => {
+                    self.next();
+                    let tuple = self.tuple_type()?;
+                    if tuple.len() == 1 {
+                        tuple[0].clone()
+                    } else {
+                        ast::Type::Tuple(tuple)
+                    }
+                },
+                LeftBrace => {
+                    self.next();
+                    let body = self.class_body()?;
+                    let object = ast::ObjectType {
+                        body,
+                        supertype: None,
+                    };
+                    ast::Type::Object(object)
+                },
+                _ => ast::Type::Literal(self.literal()?)
+            }
+        };
+        
+        // TODO: wrap in range type
+
+        return Ok(self.wrap_array_type(item_type)?);
+    }
+    
+    fn wrap_array_type(&mut self, item_type: ast::Type<'a>) -> Result<ast::Type<'a>> {
+        Ok(if self.is_next(LeftBracket) {
+            if !self.check(RightBracket) {
+                let expr = self.expression()?;
+                let array = ast::Type::Array(Box::new(item_type), expr);
+                self.wrap_array_type(array)?
+            } else {
+                let slice = ast::Type::Slice(Box::new(item_type));
+                self.wrap_array_type(slice)?
+            }
+        } else {
+            item_type
+        })
     }
     
     fn named_type(&mut self) -> Result<ast::Type<'a>> {
@@ -281,7 +383,7 @@ impl<'a> Parser<'a> {
 
         let mut return_type = None;
         if self.is_next(Colon) {
-            return_type = Some(self.type_literal()?);
+            return_type = Some(self.parse_type()?);
         }
 
         return Ok(ast::FunctionDeclaration {
@@ -321,8 +423,13 @@ impl<'a> Parser<'a> {
     }
 
     fn array_literal(&mut self) -> Result<Vec<ast::Expression<'a>>> {
-        let array = self.expression_list()?;
-        self.consume(RightBrace)?;
+        let array = if !self.check(RightBracket) {
+            self.expression_list()?
+        } else {
+            vec![]
+        };
+
+        self.consume(RightBracket)?;
         return Ok(array);
     }
 
@@ -590,11 +697,11 @@ impl<'a> Parser<'a> {
             use ast::InterfaceStatement as Stmt;
 
             let statement = match self.next().token_type {
-                TokenType::Identifier => Stmt::Field(self.field()?),
+                Identifier => Stmt::Field(self.field()?),
                 Type => {
                     let name = self.identifier()?;
                     if self.is_next(Equals) {
-                        let item_type = self.type_literal()?;
+                        let item_type = self.parse_type()?;
                         Stmt::TypeDefinition { name, item_type }
                     } else {
                         Stmt::TypeRequirement(name)
@@ -604,7 +711,7 @@ impl<'a> Parser<'a> {
                 Static => match self.next().token_type {
                     Fn => Stmt::StaticMethod(self.function()?),
                     // TODO: replace `Either` with `InterfaceStatement`
-                    TokenType::Identifier => self.partial_static_field()?.either(Stmt::StaticRequirement, Stmt::StaticDefinition),
+                    Identifier => self.partial_static_field()?.either(Stmt::StaticRequirement, Stmt::StaticDefinition),
                     unexpected => return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected))
                 },
                 unexpected => return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected))
@@ -1156,7 +1263,7 @@ impl<'a> Parser<'a> {
     /// Consumes a comma separated list of type literals and pushes them onto the provided vec of types
     fn type_list(&mut self, types: &mut Vec<ast::Type<'a>>) -> Result<()> {
         loop {
-            let item_type = self.type_literal()?;
+            let item_type = self.parse_type()?;
             types.push(item_type);
 
             if !self.is_next(Comma) {
@@ -1168,7 +1275,10 @@ impl<'a> Parser<'a> {
     /// Assumes "(" is already consumed
     fn tuple_type(&mut self) -> Result<Vec<ast::Type<'a>>> {
         let mut types = Vec::new();
-        self.type_list(&mut types)?;
+        if !self.is_next(RightParen) {
+            self.type_list(&mut types)?;
+        }
+
         self.consume(RightParen)?;
         return Ok(types);
     }
@@ -1177,11 +1287,11 @@ impl<'a> Parser<'a> {
     /// Assumes "{" is already consumed
     fn object_type(&mut self) -> Result<Vec<(ast::Identifier<'a>, ast::Type<'a>)>> {
         let mut fields = Vec::new();
-
+        
         loop {
             let name = self.identifier()?;
             self.consume(Colon)?;
-            let field_type = self.type_literal()?;
+            let field_type = self.parse_type()?;
             
             fields.push((name, field_type));
             
@@ -1192,6 +1302,28 @@ impl<'a> Parser<'a> {
         self.consume(RightBrace)?;
 
         return Ok(fields);
+    }
+    
+    fn array_type(&mut self) -> Result<Vec<(ast::Type<'a>, Option<usize>)>> {
+        todo!()
+    }
+    
+    fn function_type(&mut self) -> Result<ast::FunctionType<'a>> {
+        self.consume(LeftParen)?;
+        let parameters = self.tuple_type()?;
+        
+        let return_type = if self.is_next(Colon) {
+            Some(Box::new(
+                self.parse_type()?
+            ))
+        } else {
+            None
+        };
+
+        return Ok(ast::FunctionType {
+            parameters,
+            return_type
+        });
     }
 }
 
