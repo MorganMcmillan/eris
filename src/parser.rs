@@ -34,6 +34,7 @@ pub struct Parser<'a> {
     pub tokens: Vec<Token<'a>>,
     /// Current token
     current: usize,
+    saved: usize,
     warnings: Vec<Warning>,
     errors: Vec<Error>,
 }
@@ -46,6 +47,7 @@ impl<'a> Parser<'a> {
             input,
             tokens: Token::from_input(input),
             current: 0,
+            saved: 0,
             warnings: Vec::new(),
             errors: Vec::new(),
         }
@@ -74,7 +76,7 @@ impl<'a> Parser<'a> {
 
     // Parser helpers
 
-    fn peek(&self) -> Token<'a> {
+    pub fn peek(&self) -> Token<'a> {
         self.tokens[self.current]
     }
 
@@ -105,13 +107,24 @@ impl<'a> Parser<'a> {
         self.peek().token_type == expected
     }
 
-    fn matches(&mut self, token_types: &[TokenType]) -> Option<Token<'a>> {
+    pub fn matches(&mut self, token_types: &[TokenType]) -> Option<Token<'a>> {
         for token_type in token_types {
             if self.check(*token_type) {
+                println!("MATCHED: {token_type:?}");
                 return Some(self.next());
             }
         }
         return None;
+    }
+
+    /// Saves the current token's position
+    /// Used to enable backtracking
+    fn save_current(&mut self) {
+        self.saved = self.current;        
+    }
+    
+    fn load_current(&mut self) {
+        self.current = self.saved;
     }
 
     /// Consumes a token if it matches the expected token type
@@ -121,7 +134,7 @@ impl<'a> Parser<'a> {
         if self.check(expected) {
             Ok(self.next())
         } else {
-            Err(Error::UnexpectedToken(expected, self.previous().token_type))
+            Err(Error::UnexpectedToken(expected, self.peek().token_type))
         }
     }
 
@@ -267,6 +280,7 @@ impl<'a> Parser<'a> {
             match self.statement() {
                 Ok(statement) => statements.push(statement),
                 Err(err) => {
+                    eprintln!("Error: {err:?}");
                     self.push_error(err);
                     self.synchronize();
                 }
@@ -439,11 +453,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // Currently uses recursive descent
-    fn expression(&mut self) -> Result<ast::Expression<'a>> {
-        self.or()
-    }
-
     fn identifier(&mut self) -> Result<ast::Identifier<'a>> {
         self.consume(TokenType::Identifier).map(ast::Identifier)
     }
@@ -486,7 +495,7 @@ impl<'a> Parser<'a> {
             Binary => (&(char::to_digit as CharMapper), 2),
             _ => {
                 return Err(Error::Other(format!(
-                    "Expected primary expression, got \"{}\".",
+                    "Expected literal, got \"{}\".",
                     number.lexeme
                 )));
             }
@@ -549,74 +558,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
-        use ast::Expression as Expr;
-
-        let expr = if let Ok(name) = self.identifier() {
-            Expr::Identifier(name)
-        } else {
-            let literal = self.literal()?;
-            if let ast::Literal::Tuple(ref tuple) = literal {
-                if tuple.len() == 1 {
-                    tuple[0].clone()
-                } else {
-                    Expr::Literal(literal)
-                }
-            } else {
-                Expr::Literal(literal)
-            }
-        };
-
-        use ast::Literal::{ExclusiveRange, InclusiveRange};
-        let possible_range = if self.is_next(DotDot) {
-            Expr::Literal(ExclusiveRange(
-                Some(Box::new(expr)),
-                self.primary_expression().ok().map(Box::new),
-            ))
-        } else if self.is_next(DotDotEquals) {
-            Expr::Literal(InclusiveRange(
-                Some(Box::new(expr)),
-                self.primary_expression().ok().map(Box::new),
-            ))
-        } else {
-            expr
-        };
-
-        return Ok(possible_range);
-    }
-
-    fn finish_call(&mut self, expr: ast::Expression<'a>) -> Result<ast::Expression<'a>> {
-        Ok(ast::Expression::FunctionCall {
-            function: Box::new(expr),
-            arguments: self.cs_list0(Self::expression, RightParen)?,
-        })
-    }
-
-    fn function_call(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.primary_expression()?;
-
-        loop {
-            if self.is_next(LeftParen) {
-                expr = self.finish_call(expr)?;
-            } else if self.is_next(Dot) {
-                if let Ok(name) = self.identifier() {
-                    expr = ast::Expression::Field(Box::new(expr), name);
-                } else if self.is_next(Star) {
-                    expr = ast::Expression::Dereference(Box::new(expr));
-                } else {
-                    return Err(Error::UnexpectedInContext(
-                        "field access",
-                        self.peek().token_type,
-                    ));
-                }
-            } else {
-                break;
-            }
-        }
-
-        return Ok(expr);
-    }
-
     fn assignment(&mut self) -> Result<ast::Assignment<'a>> {
         let possibly_invalid_token = self.peek();
         let target_expr = self.function_call()?;
@@ -654,9 +595,12 @@ impl<'a> Parser<'a> {
             Break => Stmt::Break(self.break_statement()?),
             Continue => Stmt::Continue(self.continue_statement()?),
             Identifier => {
+                // Needed because `assignment` consumes an expression
+                self.save_current();
                 if let Ok(assignment) = self.assignment() {
                     Stmt::Assignment(assignment)
                 } else {
+                    self.load_current();
                     Stmt::Expression(self.expression()?)
                 }
             }
@@ -909,6 +853,14 @@ impl<'a> Parser<'a> {
         return Ok(path);
     }
 
+    // Expressions
+
+    // Currently uses recursive descent
+    pub fn expression(&mut self) -> Result<ast::Expression<'a>> {
+        // TODO: fix stack overflow
+        self.or()
+    }
+
     fn or(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.and()?;
 
@@ -956,6 +908,7 @@ impl<'a> Parser<'a> {
 
     fn term(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.factor()?;
+        println!("Consumed expr: {expr:?}");
 
         while let Some(operator) = self.matches(&[Minus, Plus]) {
             let right = self.factor()?;
@@ -967,6 +920,7 @@ impl<'a> Parser<'a> {
 
     fn factor(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.left_unary()?;
+        println!("Factor: {expr:?}");
 
         while let Some(operator) = self.matches(&[Slash, Star]) {
             let right = self.left_unary()?;
@@ -982,17 +936,86 @@ impl<'a> Parser<'a> {
             return Ok(ast::Expression::Unary(operator, Box::new(right)));
         }
 
-        return self.right_unary();
+        // TODO: add right unary "?" try operator
+        let fc =  self.function_call();
+        println!("Left unary: {fc:?}");
+        fc
     }
-    
-    fn right_unary(&mut self) -> Result<ast::Expression<'a>> {
-        let left = self.right_unary()?;
-        if let Some(operator) = self.matches(&[Question]) {
-            return Ok(ast::Expression::Unary(operator, Box::new(left)));
+
+    fn function_call(&mut self) -> Result<ast::Expression<'a>> {
+        let mut expr = self.primary_expression()?;
+        println!("Primary: {expr:?}");
+
+        loop {
+            if self.is_next(LeftParen) {
+                expr = self.finish_call(expr)?;
+            } else if self.is_next(Dot) {
+                if let Ok(name) = self.identifier() {
+                    expr = ast::Expression::Field(Box::new(expr), name);
+                } else if self.is_next(Star) {
+                    expr = ast::Expression::Dereference(Box::new(expr));
+                } else {
+                    return Err(Error::UnexpectedInContext(
+                        "field access",
+                        self.peek().token_type,
+                    ));
+                }
+            } else {
+                break;
+            }
         }
-        
-        return self.function_call();
+
+        return Ok(expr);
     }
+
+    fn finish_call(&mut self, expr: ast::Expression<'a>) -> Result<ast::Expression<'a>> {
+        Ok(ast::Expression::FunctionCall {
+            function: Box::new(expr),
+            arguments: self.cs_list0(Self::expression, RightParen)?,
+        })
+    }
+
+    fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
+        use ast::Expression as Expr;
+        
+        println!("Called primary with {:?}", self.peek());
+
+        let expr = if let Ok(name) = self.identifier() {
+            let next_token = self.peek();
+            println!("Next token should be: {next_token:?}");
+            Expr::Identifier(name)
+        } else {
+            let literal = self.literal()?;
+            if let ast::Literal::Tuple(ref tuple) = literal {
+                if tuple.len() == 1 {
+                    tuple[0].clone()
+                } else {
+                    Expr::Literal(literal)
+                }
+            } else {
+                Expr::Literal(literal)
+            }
+        };
+
+        use ast::Literal::{ExclusiveRange, InclusiveRange};
+        let possible_range = if self.is_next(DotDot) {
+            Expr::Literal(ExclusiveRange(
+                Some(Box::new(expr)),
+                self.primary_expression().ok().map(Box::new),
+            ))
+        } else if self.is_next(DotDotEquals) {
+            Expr::Literal(InclusiveRange(
+                Some(Box::new(expr)),
+                self.primary_expression().ok().map(Box::new),
+            ))
+        } else {
+            expr
+        };
+
+        println!("Returning from primary: {possible_range:?}");
+        return Ok(possible_range);
+    }
+
 
     fn parse_string(&self, string: Token<'a>) -> Result<ast::Literal<'a>> {
         use ast::InterpolatedStringPiece::*;
@@ -1273,7 +1296,7 @@ pub enum Warning {
     Other(std::string::String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Error {
     /// It's actually okay when this happens
     None,
