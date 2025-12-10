@@ -1,8 +1,10 @@
 use crate::{
-    ast, scanner::Scanner, token::{
+    ast,
+    scanner::Scanner,
+    token::{
         Token,
         TokenType::{self, *},
-    }
+    },
 };
 
 /// Used to unwrap tuples with a single value
@@ -109,7 +111,6 @@ impl<'a> Parser<'a> {
     pub fn matches(&mut self, token_types: &[TokenType]) -> Option<Token<'a>> {
         for token_type in token_types {
             if self.check(*token_type) {
-                println!("MATCHED: {token_type:?}");
                 return Some(self.next());
             }
         }
@@ -268,27 +269,28 @@ impl<'a> Parser<'a> {
     fn synchronize(&mut self) {
         self.next();
         while !self.is_at_end() {
-            if matches!(self.peek().token_type,
+            if matches!(
+                self.peek().token_type,
                 Class
-                | Interface
-                | Abstract
-                | Mixin
-                | Static
-                | Fn
-                | Let
-                | Const
-                | Do
-                | If
-                | Unless
-                | While
-                | Until
-                | For
-                | Forever
-                | Return
+                    | Interface
+                    | Abstract
+                    | Mixin
+                    | Static
+                    | Fn
+                    | Let
+                    | Const
+                    | Do
+                    | If
+                    | Unless
+                    | While
+                    | Until
+                    | For
+                    | Forever
+                    | Return
             ) {
                 return;
             }
-            
+
             self.next();
         }
     }
@@ -518,8 +520,8 @@ impl<'a> Parser<'a> {
             Binary => (&(char::to_digit as CharMapper), 2),
             _ => {
                 return Err(Error::Other(format!(
-                    "Expected literal, got \"{}\".",
-                    number.lexeme
+                    "Expected literal, got \"{:?}\".",
+                    number
                 )));
             }
         };
@@ -540,13 +542,17 @@ impl<'a> Parser<'a> {
 
         // Parse number
         let mut parsed_number = 0u64;
-        while let Some(digit) = get_char(lexeme, self.current) {
+        while let Some(digit) = get_char(lexeme, current) {
+            current += 1;
+            if digit == '_' {
+                continue;
+            }
+
             parsed_number = parsed_number
                 .checked_mul(radix)
                 .ok_or_else(|| Error::NumberTooLarge)?;
 
             parsed_number += mapping(digit, radix as u32).unwrap() as u64;
-            current += 1;
         }
 
         return Ok(ast::Literal::Integer(parsed_number));
@@ -641,26 +647,16 @@ impl<'a> Parser<'a> {
     }
 
     fn object_literal(&mut self) -> Result<Vec<(ast::Identifier<'a>, ast::Expression<'a>)>> {
-        let mut fields = Vec::new();
+        self.cs_list0(Self::object_field, RightBrace)
+    }
 
-        loop {
-            let field = self.identifier()?;
-
-            let value = if self.is_next(Equals) {
-                self.expression()?
-            } else {
-                ast::Expression::Identifier(field.clone())
-            };
-
-            fields.push((field, value));
-
-            if self.is_next(Comma) {
-                break;
-            }
-        }
-
-        self.consume(RightBrace)?;
-        return Ok(fields);
+    fn object_field(&mut self) -> Result<(ast::Identifier<'a>, ast::Expression<'a>)> {
+        let field = self.identifier()?;
+        Ok((
+            field,
+            self.if_next(Equals, Self::expression)?
+                .unwrap_or_else(|| ast::Expression::Identifier(field.clone())),
+        ))
     }
 
     fn abstract_class(&mut self) -> Result<ast::AbstractClass<'a>> {
@@ -734,11 +730,11 @@ impl<'a> Parser<'a> {
         let name = ast::Identifier(self.previous());
         let item_type = self.after(Colon)?.parse_type()?;
 
-        if self.is_next(Equals) {
+        if let Some(value) = self.if_next(Equals, Self::expression)? {
             return Ok(Stmt::StaticDefinition(ast::StaticField {
                 name,
                 item_type,
-                value: self.expression()?,
+                value
             }));
         }
 
@@ -822,6 +818,10 @@ impl<'a> Parser<'a> {
         return Ok(block);
     }
 
+    fn do_expression(&mut self) -> Result<ast::Block<'a>> {
+        self.after(Do)?.block(Self::function_statement)
+    }
+
     fn forever_statement(&mut self) -> Result<ast::Block<'a>> {
         self.after(Forever)?.block(Self::function_statement)
     }
@@ -881,8 +881,18 @@ impl<'a> Parser<'a> {
 
     // Currently uses recursive descent
     pub fn expression(&mut self) -> Result<ast::Expression<'a>> {
-        // TODO: fix stack overflow
         self.or()
+    }
+
+    fn binary_operator(&mut self, precedence: fn(&mut Self) -> Result<ast::Expression<'a>>, token_types: &[TokenType]) -> Result<ast::Expression<'a>> {
+        let mut expr = precedence(self)?;
+
+        while let Some(operator) = self.matches(token_types) {
+            let right = precedence(self)?;
+            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
+        }
+
+        return Ok(expr);
     }
 
     fn or(&mut self) -> Result<ast::Expression<'a>> {
@@ -932,7 +942,6 @@ impl<'a> Parser<'a> {
 
     fn term(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.factor()?;
-        println!("Consumed expr: {expr:?}");
 
         while let Some(operator) = self.matches(&[Minus, Plus]) {
             let right = self.factor()?;
@@ -944,9 +953,8 @@ impl<'a> Parser<'a> {
 
     fn factor(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.left_unary()?;
-        println!("Factor: {expr:?}");
 
-        while let Some(operator) = self.matches(&[Slash, Star]) {
+        while let Some(operator) = self.matches(&[Slash, Star, Percent]) {
             let right = self.left_unary()?;
             expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
         }
@@ -961,14 +969,11 @@ impl<'a> Parser<'a> {
         }
 
         // TODO: add right unary "?" try operator
-        let fc = self.function_call();
-        println!("Left unary: {fc:?}");
-        fc
+        return self.function_call();
     }
 
     fn function_call(&mut self) -> Result<ast::Expression<'a>> {
         let mut expr = self.primary_expression()?;
-        println!("Primary: {expr:?}");
 
         loop {
             if self.is_next(LeftParen) {
@@ -1002,11 +1007,8 @@ impl<'a> Parser<'a> {
     fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
         use ast::Expression as Expr;
 
-        println!("Called primary with {:?}", self.peek());
-
         let expr = if let Ok(name) = self.identifier() {
             let next_token = self.peek();
-            println!("Next token should be: {next_token:?}");
             Expr::Identifier(name)
         } else {
             let literal = self.literal()?;
@@ -1036,7 +1038,6 @@ impl<'a> Parser<'a> {
             expr
         };
 
-        println!("Returning from primary: {possible_range:?}");
         return Ok(possible_range);
     }
 
@@ -1176,6 +1177,8 @@ impl<'a> Parser<'a> {
             Some(self.identifier()?)
         };
 
+        println!("Current token: {:?}", self.peek().token_type);
+
         let destructure = if name.is_some() {
             if self.is_next(At) {
                 Some(self.destructure()?)
@@ -1190,11 +1193,19 @@ impl<'a> Parser<'a> {
             item_type = self.if_next(Colon, Self::parse_type)?;
         }
 
+        println!("Token after: {:?}", self.peek().token_type);
+
+        let guard_clause = if matches!(self.peek().token_type, If | Unless) {
+            Some(self.if_condition()?)
+        } else {
+            None
+        };
+
         return Ok(ast::MatchClause {
             name,
             destructure,
             item_type,
-            guard_clause: self.if_condition().ok(),
+            guard_clause,
         });
     }
 

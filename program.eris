@@ -1,0 +1,13 @@
+fn fizzbuzz() {
+    for i in 0..=100 {
+        println(fizzbuzz(i))
+    }
+}
+
+fn fizzbuzz(i if i % 15 == 0) { "fizzbuzz" }
+
+fn fizzbuzz(i if i % 3 == 0) { "fizz" }
+
+fn fizzbuzz(i if i % 5 == 0) { "buzz" }
+
+fn fizzbuzz(i) { i }

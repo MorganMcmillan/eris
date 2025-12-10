@@ -289,7 +289,11 @@ impl<'a> Scanner<'a> {
                 self.take_while(&char::is_whitespace);
                 return self.scan_token();
             },
-            _ => Error
+            _ => if self.identifier().len() > 0 {
+                Identifier
+            } else {
+                return None;
+            }
         };
 
         return Some(Token::new(token_type, self.lexeme()));
@@ -330,7 +334,7 @@ impl<'a> Scanner<'a> {
                 'o' => (is_octal, Octal),
                 'q' => (is_quadal, Quadal),
                 'b' => (is_binary, Binary),
-                _ => return None
+                _ => return Some(Decimal)
             };
             // Prove that number is not empty
             self.next();
