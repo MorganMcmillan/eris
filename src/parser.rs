@@ -241,10 +241,10 @@ impl<'a> Parser<'a> {
 
     fn block<T: 'a>(
         &mut self,
-        statement: fn(&mut Self) -> Result<T>
+        statement: fn(&mut Self) -> Result<T>,
     ) -> Result<ast::StatementBlock<T>> {
-        Ok(ast::StatementBlock { 
-            statements: self.after(LeftBrace)?.list0(statement, RightBrace)?
+        Ok(ast::StatementBlock {
+            statements: self.after(LeftBrace)?.list0(statement, RightBrace)?,
         })
     }
 
@@ -303,8 +303,7 @@ impl<'a> Parser<'a> {
             generics: self.generic_params()?,
             parent: self.if_next(Of, Self::parse_type)?,
             with: self
-                .if_next(With, |p| 
-                    p.separated_while1(Comma, Self::named_type))?
+                .if_next(With, |p| p.separated_while1(Comma, Self::named_type))?
                 .unwrap_or_else(Vec::new),
             body: self.block(Self::class_statement)?,
         })
@@ -353,7 +352,7 @@ impl<'a> Parser<'a> {
     }
 
     fn type_literal(&mut self) -> Result<ast::Type<'a>> {
-        let mut item_type = if let Ok(named) = self.named_type() {
+        let item_type = if let Ok(named) = self.named_type() {
             if self.is_next(LeftBrace) {
                 let body = self.block(Self::class_statement)?;
                 let object = ast::ObjectType {
@@ -396,7 +395,6 @@ impl<'a> Parser<'a> {
         };
 
         // TODO: wrap in range type
-
         return Ok(self.wrap_array_type(item_type)?);
     }
 
@@ -449,7 +447,9 @@ impl<'a> Parser<'a> {
         Ok(ast::FunctionDeclaration {
             name: self.after(Fn)?.identifier()?,
             generics: self.generic_params()?,
-            parameters: self.after(LeftParen)?.cs_list0(Self::match_clause, RightParen)?,
+            parameters: self
+                .after(LeftParen)?
+                .cs_list0(Self::match_clause, RightParen)?,
             return_type: self.if_next(Colon, Self::parse_type)?,
         })
     }
@@ -526,24 +526,57 @@ impl<'a> Parser<'a> {
             LeftBracket => Lit::Array(self.array_literal()?),
             // Note: I was originally going to use braces for both blocks an objects, but now I might just add a new keyword
             LeftBrace => Lit::Object(self.object_literal()?),
+            DotDot => {
+                return Ok(Lit::ExclusiveRange(
+                    None,
+                    self.primary_expression().ok().map(Box::new),
+                ));
+            }
+            DotDotEquals => {
+                return Ok(Lit::InclusiveRange(
+                    None,
+                    self.primary_expression().ok().map(Box::new),
+                ));
+            }
             // Todo: create a singular number token with a separate number type
             number_type => self.number(self.previous())?,
         })
     }
 
     fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
-        if let Ok(name) = self.identifier() {
-            return Ok(ast::Expression::Identifier(name));
-        }
+        use ast::Expression as Expr;
 
-        let literal = self.literal()?;
-        if let ast::Literal::Tuple(ref tuple) = literal {
-            if tuple.len() == 1 {
-                return Ok(tuple[0].clone());
+        let expr = if let Ok(name) = self.identifier() {
+            Expr::Identifier(name)
+        } else {
+            let literal = self.literal()?;
+            if let ast::Literal::Tuple(ref tuple) = literal {
+                if tuple.len() == 1 {
+                    tuple[0].clone()
+                } else {
+                    Expr::Literal(literal)
+                }
+            } else {
+                Expr::Literal(literal)
             }
-        }
+        };
 
-        return Ok(ast::Expression::Literal(literal));
+        use ast::Literal::{ExclusiveRange, InclusiveRange};
+        let possible_range = if self.is_next(DotDot) {
+            Expr::Literal(ExclusiveRange(
+                Some(Box::new(expr)),
+                self.primary_expression().ok().map(Box::new),
+            ))
+        } else if self.is_next(DotDotEquals) {
+            Expr::Literal(InclusiveRange(
+                Some(Box::new(expr)),
+                self.primary_expression().ok().map(Box::new),
+            ))
+        } else {
+            expr
+        };
+
+        return Ok(possible_range);
     }
 
     fn finish_call(&mut self, expr: ast::Expression<'a>) -> Result<ast::Expression<'a>> {
@@ -621,15 +654,15 @@ impl<'a> Parser<'a> {
                     Stmt::Expression(self.expression()?)
                 }
             }
-            _ => Stmt::Expression(self.expression()?)
+            _ => Stmt::Expression(self.expression()?),
         })
     }
 
     /// Assumes `Fn` is already consumed
     fn function(&mut self) -> Result<ast::FunctionDefinition<'a>> {
-        Ok(ast::FunctionDefinition { 
+        Ok(ast::FunctionDefinition {
             declaration: self.function_declaration()?,
-            body: self.block(Self::function_statement)?
+            body: self.block(Self::function_statement)?,
         })
     }
 
@@ -662,10 +695,9 @@ impl<'a> Parser<'a> {
             generics: self.generic_params()?,
             parent: self.if_next(Of, Self::parse_type)?,
             with: self
-                .if_next(With, |p|
-                    p.separated_while1(Comma, Self::named_type))?
+                .if_next(With, |p| p.separated_while1(Comma, Self::named_type))?
                 .unwrap_or_else(Vec::new),
-            body: self.block(Self::interface_statement)?
+            body: self.block(Self::interface_statement)?,
         })
     }
 
@@ -717,7 +749,7 @@ impl<'a> Parser<'a> {
     fn field(&mut self) -> Result<ast::Field<'a>> {
         Ok(ast::Field {
             name: ast::Identifier(self.previous()),
-            item_type: self.after(Colon)?.parse_type()?
+            item_type: self.after(Colon)?.parse_type()?,
         })
     }
 
@@ -824,9 +856,7 @@ impl<'a> Parser<'a> {
         Ok(ast::WhileStatement {
             condition: self.after(While)?.expression()?,
             body: self.block(Self::function_statement)?,
-            else_branch: self
-                .if_next(Else, |p|
-                    p.block(Self::function_statement))?
+            else_branch: self.if_next(Else, |p| p.block(Self::function_statement))?,
         })
     }
 
@@ -848,7 +878,7 @@ impl<'a> Parser<'a> {
                         .as_literal()
                         .map(ast::Expression::Literal)
                         .ok_or_else(|| Error::Other("Invalid literal in for loop.".to_owned()))?,
-                    body: self.block(Self::function_statement)?
+                    body: self.block(Self::function_statement)?,
                 });
             }
         }
@@ -1012,7 +1042,9 @@ impl<'a> Parser<'a> {
         Ok(ast::Enum {
             name: self.identifier()?,
             generics: self.generic_params()?,
-            body: self.after(LeftBrace)?.cs_list0(Self::enum_value, RightBrace)?,
+            body: self
+                .after(LeftBrace)?
+                .cs_list0(Self::enum_value, RightBrace)?,
         })
     }
 
@@ -1062,7 +1094,7 @@ impl<'a> Parser<'a> {
         // "name @ destructure: type"
         // All can be followed up by "if" | "unless"
         let mut item_type = None;
-        
+
         // Try to consume identifier as a type, since a valid identifier is a valid type
         let name = if let Ok(type_or_name) = self.parse_type() {
             if let ast::Type::Named {
@@ -1101,7 +1133,7 @@ impl<'a> Parser<'a> {
             name,
             destructure,
             item_type,
-            guard_clause: self.if_condition().ok()
+            guard_clause: self.if_condition().ok(),
         });
     }
 
@@ -1149,16 +1181,16 @@ impl<'a> Parser<'a> {
             LeftParen => {
                 self.next();
                 Des::Tuple(self.cs_list0(Self::match_clause, RightParen)?)
-            },
+            }
             LeftBracket => {
                 self.next();
                 Des::Array(self.cs_list0(Self::array_destructure, RightBracket)?)
-            },
+            }
             LeftBrace => {
                 self.next();
                 Des::Object(self.cs_list0(Self::object_destructure, RightBrace)?)
-            },
-            _ => return Err(Error::None)
+            }
+            _ => return Err(Error::None),
         })
     }
 
@@ -1169,11 +1201,11 @@ impl<'a> Parser<'a> {
             ast::ArrayDestructure::Plain(self.match_clause()?)
         })
     }
-    
+
     fn object_destructure(&mut self) -> Result<ast::ObjectDestructure<'a>> {
         Ok(ast::ObjectDestructure {
             clause: self.match_clause()?,
-            field: self.if_next(Equals, Self::identifier)?
+            field: self.if_next(Equals, Self::identifier)?,
         })
     }
 

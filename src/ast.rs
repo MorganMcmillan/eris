@@ -193,7 +193,8 @@ pub enum Literal<'a> {
     Tuple(Vec<Expression<'a>>),
     Object(Vec<(Identifier<'a>, Expression<'a>)>),
     Array(Vec<Expression<'a>>),
-    Range(Option<Box<Expression<'a>>>, Option<Box<Expression<'a>>>),
+    ExclusiveRange(Option<Box<Expression<'a>>>, Option<Box<Expression<'a>>>),
+    InclusiveRange(Option<Box<Expression<'a>>>, Option<Box<Expression<'a>>>),
 }
 
 #[derive(Clone)]
