@@ -294,16 +294,16 @@ pub enum Destructure<'a> {
 
 #[derive(Clone)]
 pub enum ArrayDestructure<'a> {
-    Splat(Option<Destructure<'a>>),
+    Splat(Option<MatchClause<'a>>),
     Plain(MatchClause<'a>)
 }
 
 /// Syntax: "name @ des: type = field"
 #[derive(Clone)]
 pub struct ObjectDestructure<'a> {
-    clause: MatchClause<'a>,
-    // If None, use the destructure's name
-    field: Option<Identifier<'a>>
+    pub clause: MatchClause<'a>,
+    /// If None, use the destructure's name
+    pub field: Option<Identifier<'a>>
 }
 
 #[derive(Clone)]
@@ -427,5 +427,5 @@ pub enum EnumValue<'a> {
     // "(Type1, Type2)"
     Tuple(Vec<Type<'a>>),
     // "{ name: Type }"
-    Object(Vec<(Identifier<'a>, Type<'a>)>)
+    Object(Vec<Field<'a>>)
 }
