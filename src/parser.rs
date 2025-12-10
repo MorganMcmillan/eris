@@ -100,6 +100,13 @@ impl<'a> Parser<'a> {
         self.tokens[self.current - 1]
     }
 
+    /// Skips a token and returns Self.
+    /// Use only when you know the desired token is next
+    fn skip(&mut self) -> &mut Self {
+        self.current += 1;
+        return self;
+    }
+
     fn is_at_end(&self) -> bool {
         self.current >= self.tokens.len() - 1
     }
@@ -135,6 +142,14 @@ impl<'a> Parser<'a> {
             Ok(self.next())
         } else {
             Err(Error::UnexpectedToken(expected, self.peek().token_type))
+        }
+    }
+    
+    fn consume_if(&mut self, predicate: fn(&TokenType) -> bool) -> Result<Token<'a>> {
+        if predicate(&self.peek().token_type) {
+            Ok(self.next())
+        } else {
+            Err(Error::None)
         }
     }
 
@@ -590,7 +605,8 @@ impl<'a> Parser<'a> {
     fn assignment(&mut self) -> Result<ast::Assignment<'a>> {
         let possibly_invalid_token = self.peek();
         let target_expr = self.function_call()?;
-        let value = self.after(Equals)?.expression()?;
+        let operator = self.consume_if(TokenType::is_assignment_operator)?;
+        let value = self.expression()?;
 
         use ast::{AssignmentTarget::*, Expression as Expr};
         let target = match target_expr {
@@ -604,7 +620,7 @@ impl<'a> Parser<'a> {
             _ => return Err(Error::InvalidLeftValue(possibly_invalid_token.token_type)),
         };
 
-        return Ok(ast::Assignment { target, value });
+        return Ok(ast::Assignment { target, value, operator });
     }
 
     fn return_statement(&mut self) -> Result<Option<ast::Expression<'a>>> {
@@ -616,15 +632,16 @@ impl<'a> Parser<'a> {
         use ast::FunctionStatement as Stmt;
 
         Ok(match self.peek().token_type {
+            Use => Stmt::Use(self.skip().use_statement()?),
             Let => Stmt::Let(self.let_variable()?),
             Forever => Stmt::Forever(self.forever_statement()?),
-            While => Stmt::While(self.while_statement()?),
+            While | Until => Stmt::While(self.while_statement()?),
             For => Stmt::For(self.for_statement()?),
             Return => Stmt::Return(self.return_statement()?),
             Break => Stmt::Break(self.break_statement()?),
             Continue => Stmt::Continue(self.continue_statement()?),
             // TODO: I may just make assignment an expression because it's easier to handle
-            Identifier => {
+            _ => {
                 // Needed because `assignment` consumes an expression
                 self.save_current();
                 if let Ok(assignment) = self.assignment() {
@@ -634,7 +651,6 @@ impl<'a> Parser<'a> {
                     Stmt::Expression(self.expression()?)
                 }
             }
-            _ => Stmt::Expression(self.expression()?),
         })
     }
 
@@ -827,11 +843,28 @@ impl<'a> Parser<'a> {
     }
 
     fn while_statement(&mut self) -> Result<ast::WhileStatement<'a>> {
-        Ok(ast::WhileStatement {
-            condition: self.after(While)?.expression()?,
+        let invert_condition = if self.is_next(Until) {
+            true
+        } else {
+            self.consume(While)?;
+            false
+        };
+        let lexeme = self.previous().lexeme;
+        
+        let mut condition = self.expression()?;
+        if invert_condition {
+            let not_token = Token {
+                token_type: TokenType::Not,
+                lexeme,
+            };
+            condition = ast::Expression::Unary(not_token, Box::new(condition));
+        }
+
+        return Ok(ast::WhileStatement {
+            condition,
             body: self.block(Self::function_statement)?,
             else_branch: self.if_next(Else, |p| p.block(Self::function_statement))?,
-        })
+        });
     }
 
     fn for_statement(&mut self) -> Result<ast::ForStatement<'a>> {
@@ -879,11 +912,6 @@ impl<'a> Parser<'a> {
 
     // Expressions
 
-    // Currently uses recursive descent
-    pub fn expression(&mut self) -> Result<ast::Expression<'a>> {
-        self.or()
-    }
-
     fn binary_operator(&mut self, precedence: fn(&mut Self) -> Result<ast::Expression<'a>>, token_types: &[TokenType]) -> Result<ast::Expression<'a>> {
         let mut expr = precedence(self)?;
 
@@ -895,71 +923,41 @@ impl<'a> Parser<'a> {
         return Ok(expr);
     }
 
+    // Currently uses recursive descent
+    pub fn expression(&mut self) -> Result<ast::Expression<'a>> {
+        self.or()
+    }
+
     fn or(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.and()?;
-
-        while let Ok(operator) = self.consume(Or) {
-            let right = self.and()?;
-            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
-        }
-
-        return Ok(expr);
+        self.binary_operator(Self::and, &[Or])
     }
 
     fn and(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.equality()?;
+        self.binary_operator(Self::is, &[And])
+    }
 
-        while let Ok(operator) = self.consume(And) {
-            let right = self.equality()?;
-            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
-        }
-
-        return Ok(expr);
+    fn is(&mut self) -> Result<ast::Expression<'a>> {
+        self.binary_operator(Self::equality, &[Is])
     }
 
     fn equality(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.comparison()?;
-
-        while let Some(operator) = self.matches(&[BangEquals, EqualsEquals]) {
-            let right = self.comparison()?;
-            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
-        }
-
-        return Ok(expr);
+        self.binary_operator(Self::comparison, &[EqualsEquals, BangEquals])
     }
 
     fn comparison(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.term()?;
+        self.binary_operator(Self::in_operator, &[Greater, GreaterEquals, Less, LessEquals])
+    }
 
-        // Todo: handle "<<" and ">>" bit shift operators
-        while let Some(operator) = self.matches(&[Greater, GreaterEquals, Less, LessEquals]) {
-            let right = self.term()?;
-            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
-        }
-
-        return Ok(expr);
+    fn in_operator(&mut self) -> Result<ast::Expression<'a>> {
+        self.binary_operator(Self::term, &[In])
     }
 
     fn term(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.factor()?;
-
-        while let Some(operator) = self.matches(&[Minus, Plus]) {
-            let right = self.factor()?;
-            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
-        }
-
-        return Ok(expr);
+        self.binary_operator(Self::factor, &[Plus, Minus])
     }
 
     fn factor(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.left_unary()?;
-
-        while let Some(operator) = self.matches(&[Slash, Star, Percent]) {
-            let right = self.left_unary()?;
-            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
-        }
-
-        return Ok(expr);
+        self.binary_operator(Self::left_unary, &[Star, Slash, Percent])
     }
 
     fn left_unary(&mut self) -> Result<ast::Expression<'a>> {
@@ -968,8 +966,17 @@ impl<'a> Parser<'a> {
             return Ok(ast::Expression::Unary(operator, Box::new(right)));
         }
 
-        // TODO: add right unary "?" try operator
-        return self.function_call();
+        return self.right_unary();
+    }
+    
+    fn right_unary(&mut self) -> Result<ast::Expression<'a>> {
+        let mut expr = self.function_call()?;
+        
+        while let Some(operator) = self.matches(&[Question]) {
+            expr = ast::Expression::Unary(operator, Box::new(expr));
+        }
+
+        return Ok(expr);
     }
 
     fn function_call(&mut self) -> Result<ast::Expression<'a>> {
@@ -1006,20 +1013,22 @@ impl<'a> Parser<'a> {
 
     fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
         use ast::Expression as Expr;
-
-        let expr = if let Ok(name) = self.identifier() {
-            let next_token = self.peek();
-            Expr::Identifier(name)
-        } else {
-            let literal = self.literal()?;
-            if let ast::Literal::Tuple(ref tuple) = literal {
-                if tuple.len() == 1 {
-                    tuple[0].clone()
+        
+        let expr = match self.peek().token_type {
+            Identifier => Expr::Identifier(self.identifier()?),
+            If | Unless => Expr::If(self.if_expression()?),
+            Do => Expr::Block(self.do_expression()?),
+            _ => {
+                let literal = self.literal()?;
+                if let ast::Literal::Tuple(ref tuple) = literal {
+                    if tuple.len() == 1 {
+                        tuple[0].clone()
+                    } else {
+                        Expr::Literal(literal)
+                    }
                 } else {
                     Expr::Literal(literal)
                 }
-            } else {
-                Expr::Literal(literal)
             }
         };
 
@@ -1039,6 +1048,36 @@ impl<'a> Parser<'a> {
         };
 
         return Ok(possible_range);
+    }
+    
+    // Does not assume `If` has been consumed
+    fn if_expression(&mut self) -> Result<ast::IfExpression<'a>> {
+        let if_block = ast::ConditionalBlock{
+            condition: Box::new(self.if_condition()?),
+            body: self.after(LeftBrace)?.block(Self::function_statement)?
+        };
+
+        let mut conditional_branches = vec![if_block];
+        
+        let mut else_branch = None;
+        while self.is_next(Else) {
+            let condition = self.if_condition();
+            let body = self.after(LeftBrace)?.block(Self::function_statement)?;
+            if let Ok(condition) = condition {
+                let else_if_block = ast::ConditionalBlock {
+                    condition: Box::new(condition),
+                    body
+                };
+                conditional_branches.push(else_if_block);
+            } else {
+                else_branch = Some(body);
+            }
+        }
+        
+        return Ok(ast::IfExpression {
+            conditional_branches,
+            else_branch
+        });
     }
 
     fn parse_string(&self, string: Token<'a>) -> Result<ast::Literal<'a>> {
@@ -1115,24 +1154,9 @@ impl<'a> Parser<'a> {
 
         let name = self.identifier()?;
         let value = match self.peek().token_type {
-            Equals => {
-                self.next();
-                if let Ok(constant) = self.identifier() {
-                    Value::NamedConstant(constant)
-                } else {
-                    let literal = self.literal()?;
-                    // TODO: maybe just make the value a constant expression
-                    Value::Value(literal)
-                }
-            }
-            LeftParen => {
-                self.next();
-                Value::Tuple(self.tuple_type()?)
-            }
-            LeftBrace => {
-                self.next();
-                Value::Object(self.object_type()?)
-            }
+            Equals => Value::Expression(self.skip().expression()?),
+            LeftParen => Value::Tuple(self.skip().tuple_type()?),
+            LeftBrace => Value::Object(self.skip().object_type()?),
             _ => Value::None,
         };
 
@@ -1180,11 +1204,7 @@ impl<'a> Parser<'a> {
         println!("Current token: {:?}", self.peek().token_type);
 
         let destructure = if name.is_some() {
-            if self.is_next(At) {
-                Some(self.destructure()?)
-            } else {
-                None
-            }
+            self.if_next(At, Self::destructure)?
         } else {
             self.destructure().ok()
         };
@@ -1209,6 +1229,7 @@ impl<'a> Parser<'a> {
         });
     }
 
+    /// Requires `If` or `Unless` to not be consumed
     fn if_condition(&mut self) -> Result<ast::Expression<'a>> {
         let invert_condition = if self.is_next(Unless) {
             true
@@ -1343,3 +1364,11 @@ pub enum Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn expressions()
+// }

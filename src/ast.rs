@@ -140,6 +140,7 @@ pub enum FunctionStatement<'a> {
     For(ForStatement<'a>),
     Break(BreakStatement<'a>),
     Continue(Option<Identifier<'a>>),
+    Use(UsePath<'a>),
 }
 
 #[derive(Clone, Debug)]
@@ -173,7 +174,8 @@ pub struct LetStatement<'a> {
 #[derive(Clone, Debug)]
 pub struct Assignment<'a> {
     pub target: AssignmentTarget<'a>,
-    pub value: Expression<'a>
+    pub value: Expression<'a>,
+    pub operator: Token<'a>
 }
 
 #[derive(Clone, Debug)]
@@ -254,7 +256,7 @@ pub struct ConditionalBlock<'a> {
 #[derive(Clone, Debug)]
 pub struct IfExpression<'a> {
     pub conditional_branches: Vec<ConditionalBlock<'a>>,
-    pub else_branch: Block<'a> 
+    pub else_branch: Option<Block<'a>> 
 }
 
 #[derive(Clone, Debug)]
@@ -428,8 +430,7 @@ pub type EnumBody<'a> = Vec<(Identifier<'a>, EnumValue<'a>)>;
 pub enum EnumValue<'a> {
     None,
     // "= 1"
-    Value(Literal<'a>),
-    NamedConstant(Identifier<'a>),
+    Expression(Expression<'a>),
     // "(Type1, Type2)"
     Tuple(Vec<Type<'a>>),
     // "{ name: Type }"

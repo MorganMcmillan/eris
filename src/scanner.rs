@@ -268,7 +268,7 @@ impl<'a> Scanner<'a> {
             'b' => self.keyword( &[("break", Break)]),
             'c' => self.keyword( &[("class", Class), ("const", Const), ("continue", Continue)]),
             'd' => self.keyword( &[("do", Do)]),
-            'e' => self.keyword( &[("else", Else), ("elseif", Elseif), ("enum", Enum), ("extend", Extend)]),
+            'e' => self.keyword( &[("else", Else), ("enum", Enum), ("extend", Extend)]),
             'f' => self.keyword( &[("false", False), ("fn", Fn), ("for", For), ("forever", Forever)]),
             'i' => self.keyword( &[("if", If), ("in", In), ("interface", Interface), ("is", Is)]),
             'l' => self.keyword( &[("let", Let)]),

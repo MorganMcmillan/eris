@@ -62,7 +62,6 @@ pub enum TokenType {
     Continue,
     Do,
     Else,
-    Elseif,
     Enum,
     Extend,
     False,
@@ -112,6 +111,27 @@ pub enum TokenType {
     MinusArrow,
     Error,
     Eof,
+}
+
+impl TokenType {
+    // Predicates
+
+    pub fn is_assignment_operator(&self) -> bool {
+        use TokenType::*;
+        matches!(self,
+            Equals
+            | PlusEquals
+            | MinusEquals
+            | StarEquals
+            | SlashEquals
+            | PercentEquals
+            | PipeEquals
+            | AmpersandEquals
+            | CaratEquals
+            | PlusPlusEquals
+            | StarStarEquals
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
