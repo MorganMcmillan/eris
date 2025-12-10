@@ -1,9 +1,8 @@
 use crate::{
-    ast,
-    token::{
+    ast, scanner::Scanner, token::{
         Token,
         TokenType::{self, *},
-    },
+    }
 };
 
 /// Used to unwrap tuples with a single value
@@ -45,7 +44,7 @@ impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
             input,
-            tokens: Token::from_input(input),
+            tokens: Scanner::new(input).scan(),
             current: 0,
             saved: 0,
             warnings: Vec::new(),
@@ -120,9 +119,9 @@ impl<'a> Parser<'a> {
     /// Saves the current token's position
     /// Used to enable backtracking
     fn save_current(&mut self) {
-        self.saved = self.current;        
+        self.saved = self.current;
     }
-    
+
     fn load_current(&mut self) {
         self.current = self.saved;
     }
@@ -267,7 +266,31 @@ impl<'a> Parser<'a> {
 
     // Get the parser back into a stable state after an error is found
     fn synchronize(&mut self) {
-        todo!("synchronize")
+        self.next();
+        while !self.is_at_end() {
+            if matches!(self.peek().token_type,
+                Class
+                | Interface
+                | Abstract
+                | Mixin
+                | Static
+                | Fn
+                | Let
+                | Const
+                | Do
+                | If
+                | Unless
+                | While
+                | Until
+                | For
+                | Forever
+                | Return
+            ) {
+                return;
+            }
+            
+            self.next();
+        }
     }
 
     // Parsing functions
@@ -594,6 +617,7 @@ impl<'a> Parser<'a> {
             Return => Stmt::Return(self.return_statement()?),
             Break => Stmt::Break(self.break_statement()?),
             Continue => Stmt::Continue(self.continue_statement()?),
+            // TODO: I may just make assignment an expression because it's easier to handle
             Identifier => {
                 // Needed because `assignment` consumes an expression
                 self.save_current();
@@ -937,7 +961,7 @@ impl<'a> Parser<'a> {
         }
 
         // TODO: add right unary "?" try operator
-        let fc =  self.function_call();
+        let fc = self.function_call();
         println!("Left unary: {fc:?}");
         fc
     }
@@ -977,7 +1001,7 @@ impl<'a> Parser<'a> {
 
     fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
         use ast::Expression as Expr;
-        
+
         println!("Called primary with {:?}", self.peek());
 
         let expr = if let Ok(name) = self.identifier() {
@@ -1015,7 +1039,6 @@ impl<'a> Parser<'a> {
         println!("Returning from primary: {possible_range:?}");
         return Ok(possible_range);
     }
-
 
     fn parse_string(&self, string: Token<'a>) -> Result<ast::Literal<'a>> {
         use ast::InterpolatedStringPiece::*;
