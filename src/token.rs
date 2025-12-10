@@ -9,6 +9,7 @@ pub enum TokenType {
     Dollar,
     At,
     Hash,
+    Question,
     // Matching pairs of tokens
     Dot,
     DotDot,
@@ -153,6 +154,8 @@ pub struct Token<'a> {
     pub lexeme: &'a str,
 }
 
+// TODO: replace static functions with scanner methods
+
 impl<'a> Token<'a> {
     fn new(token_type: TokenType, lexeme: &'a str) -> Self {
         Self {
@@ -176,13 +179,17 @@ impl<'a> Token<'a> {
 
     fn keyword(scanner: &mut Scanner<'a>, keywords: &[(&str, TokenType)]) -> TokenType {
         // TODO: replace with trie
-        let word = scanner.take_while(&is_alphanumeric);
+        let word = Token::identifier(scanner);
         for (keyword, token) in keywords {
             if &keyword[1..] == word {
                 return *token;
             }
         }
         return TokenType::Identifier;
+    }
+
+    fn identifier(scanner: &mut Scanner<'a>) -> &'a str {
+        scanner.take_while(&is_alphanumeric)
     }
 
     fn scan_token(scanner: &mut Scanner<'a>) -> Option<Self> {
@@ -210,8 +217,9 @@ impl<'a> Token<'a> {
             }
             ,
             '$' => Dollar,
-            '@' => At,
+            '?' => Question,
             // TODO: match both macro identifiers and hash-strings
+            '@' => At,
             '#' => Hash,
             '(' => LeftParen,
             ')' => RightParen,

@@ -1,6 +1,6 @@
 use crate::token::Token;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Statement<'a> {
     Class(Class<'a>),
     AbstractClass(AbstractClass<'a>),
@@ -12,17 +12,18 @@ pub enum Statement<'a> {
     ConstantDefinition(ConstAssignment<'a>),
     Function(FunctionDefinition<'a>),
     Use(UsePath<'a>),
-    Constant(ConstAssignment<'a>)
+    Constant(ConstAssignment<'a>),
+    Eof
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ExtendWith<'a> {
     pub extend: Type<'a>,
     pub with: Option<Type<'a>>,
     pub body: ClassBody<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum UsePath<'a> {
     /// End of use statement
     None,
@@ -45,7 +46,7 @@ pub enum UsePath<'a> {
 // Wait, isn't this more like a static constant?
 // In Rust, you have let and let mut.
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConstAssignment<'a> {
     pub name: Identifier<'a>,
     /// Unlike let assignments, the type is required.
@@ -54,25 +55,29 @@ pub struct ConstAssignment<'a> {
     pub value: Expression<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StatementBlock<T> {
     pub statements: Vec<T>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Identifier<'a>(pub Token<'a>);
 
 impl<'a> Identifier<'a> {
     pub fn name(&self) -> &'a str { self.0.lexeme }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Type<'a> {
     Named{
         path: Vec<Identifier<'a>>,
         generics: Vec<Type<'a>>
     },
-    SelfKeyword{
+    SelfKeyword {
+        path: Vec<Identifier<'a>>,
+        generics: Vec<Type<'a>>
+    },
+    SuperKeyword{
         path: Vec<Identifier<'a>>,
         generics: Vec<Type<'a>>
     },
@@ -89,25 +94,25 @@ pub enum Type<'a> {
     Literal(Literal<'a>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FunctionType<'a> {
     pub parameters: Vec<Type<'a>>,
     pub return_type: Option<Box<Type<'a>>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ObjectType<'a> {
     pub body: ClassBody<'a>,
     pub supertype: Option<Box<Type<'a>>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TypePath<'a> {
     pub top: Identifier<'a>,
     pub rest: Vec<Identifier<'a>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FunctionDeclaration<'a> {
     pub name: Identifier<'a>,
     pub generics: Vec<Generic<'a>>,
@@ -115,7 +120,7 @@ pub struct FunctionDeclaration<'a> {
     pub return_type: Option<Type<'a>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FunctionDefinition<'a> {
     pub declaration: FunctionDeclaration<'a>,
     pub body: Block<'a>
@@ -123,7 +128,7 @@ pub struct FunctionDefinition<'a> {
 
 pub type Block<'a> = StatementBlock<FunctionStatement<'a>>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum FunctionStatement<'a> {
     // Note: check for expression statement which don't cause side-effects or are not the last statement in the block
     Expression(Expression<'a>),
@@ -137,7 +142,7 @@ pub enum FunctionStatement<'a> {
     Continue(Option<Identifier<'a>>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WhileStatement<'a> {
     pub condition: Expression<'a>,
     pub body: Block<'a>,
@@ -145,7 +150,7 @@ pub struct WhileStatement<'a> {
     pub else_branch: Option<Block<'a>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ForStatement<'a> {
     pub loop_variable: Option<MatchClause<'a>>,
     /// If no "in" is found and an identifier was parsed, promote that identifier to an expression
@@ -153,25 +158,25 @@ pub struct ForStatement<'a> {
     pub body: Block<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BreakStatement<'a> {
     pub label: Option<Identifier<'a>>,
     pub value: Option<Expression<'a>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LetStatement<'a> {
     pub clause: MatchClause<'a>,
     pub value: Option<Expression<'a>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Assignment<'a> {
     pub target: AssignmentTarget<'a>,
     pub value: Expression<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum AssignmentTarget<'a> {
     Variable(Identifier<'a>),
     Field(Expression<'a>, Identifier<'a>),
@@ -182,7 +187,7 @@ pub enum AssignmentTarget<'a> {
     Dereference(Expression<'a>)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Literal<'a> {
     Nil,
     False,
@@ -197,13 +202,13 @@ pub enum Literal<'a> {
     InclusiveRange(Option<Box<Expression<'a>>>, Option<Box<Expression<'a>>>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct InterpolatedString<'a>{
     pub token: Token<'a>,
     pub pieces: Vec<InterpolatedStringPiece<'a>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum InterpolatedStringPiece<'a> {
     Literal(&'a str),
     Escaped(char),
@@ -211,7 +216,7 @@ pub enum InterpolatedStringPiece<'a> {
     TypedExpression(Expression<'a>, Type<'a>)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Expression<'a> {
     Block(Block<'a>),
     Binary(Token<'a>, Box<Expression<'a>>, Box<Expression<'a>>),
@@ -239,26 +244,26 @@ pub enum Expression<'a> {
     Literal(Literal<'a>)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConditionalBlock<'a> {
     pub condition: Box<Expression<'a>>,
     pub body: Block<'a>
 }
 
 // Note: "unless" is syntactic sugar for if. It implicitly wraps the expression in "not"
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct IfExpression<'a> {
     pub conditional_branches: Vec<ConditionalBlock<'a>>,
     pub else_branch: Block<'a> 
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MatchExpression<'a> {
     pub input: Box<Expression<'a>>,
     pub match_arms: Vec<(MatchClause<'a>, Expression<'a>)>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MatchClause<'a> {
     pub name: Option<Identifier<'a>>,
     pub destructure: Option<Destructure<'a>>,
@@ -286,41 +291,41 @@ impl<'a> MatchClause<'a> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Destructure<'a> {
     Tuple(Vec<MatchClause<'a>>),
     Array(Vec<ArrayDestructure<'a>>),
     Object(Vec<ObjectDestructure<'a>>)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ArrayDestructure<'a> {
     Splat(Option<MatchClause<'a>>),
     Plain(MatchClause<'a>)
 }
 
 /// Syntax: "name @ des: type = field"
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ObjectDestructure<'a> {
     pub clause: MatchClause<'a>,
     /// If None, use the destructure's name
     pub field: Option<Identifier<'a>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WithExpression<'a> {
     pub variables: Vec<Identifier<'a>>,
     pub body: Block<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Generic<'a> {
     pub name: Identifier<'a>,
     pub supertype: Option<Type<'a>>,
     pub default_type: Option<Type<'a>>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Class<'a> {
     pub generics: Vec<Generic<'a>>,
     pub name: Identifier<'a>,
@@ -332,7 +337,7 @@ pub struct Class<'a> {
 pub type ClassBody<'a> = StatementBlock<ClassStatement<'a>>;
 
 // Todo make separate AbstractClass struct
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ClassStatement<'a> {
     StaticField(StaticField<'a>),
     Field(Field<'a>),
@@ -341,20 +346,20 @@ pub enum ClassStatement<'a> {
     StaticMethod(FunctionDefinition<'a>)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TypeDefinition<'a> {
     pub name: Identifier<'a>,
     pub generics: Vec<Generic<'a>>,
     pub type_value: Type<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Field<'a> {
     pub name: Identifier<'a>,
     pub item_type: Type<'a>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AbstractClass<'a> {
     pub generics: Vec<Generic<'a>>,
     pub name: Identifier<'a>,
@@ -366,7 +371,7 @@ pub struct AbstractClass<'a> {
 pub type InterfaceBody<'a> = StatementBlock<InterfaceStatement<'a>>;
 pub type AbstractClassBody<'a> = InterfaceBody<'a>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum InterfaceStatement<'a> {
     StaticRequirement(PartialStaticField<'a>),
     StaticDefinition(StaticField<'a>),
@@ -382,20 +387,20 @@ pub enum InterfaceStatement<'a> {
     Method(FunctionDefinition<'a>)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PartialStaticField<'a> {
     pub name: Identifier<'a>,
     pub item_type: Type<'a>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StaticField<'a> {
     pub name: Identifier<'a>,
     pub item_type: Type<'a>,
     pub value: Expression<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Interface<'a> {
     pub generics: Vec<Generic<'a>>,
     pub name: Identifier<'a>,
@@ -403,14 +408,14 @@ pub struct Interface<'a> {
     pub body: InterfaceBody<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Mixin<'a> {
     pub name: Identifier<'a>,
     pub generics: Vec<Generic<'a>>,
     pub body: ClassBody<'a>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Enum<'a> {
     pub name: Identifier<'a>,
     pub generics: Vec<Generic<'a>>,
@@ -419,7 +424,7 @@ pub struct Enum<'a> {
 
 pub type EnumBody<'a> = Vec<(Identifier<'a>, EnumValue<'a>)>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum EnumValue<'a> {
     None,
     // "= 1"

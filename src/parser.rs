@@ -31,7 +31,7 @@ impl<T: Clone> FirstOr<T> for Vec<T> {
 
 pub struct Parser<'a> {
     input: &'a str,
-    tokens: Vec<Token<'a>>,
+    pub tokens: Vec<Token<'a>>,
     /// Current token
     current: usize,
     warnings: Vec<Warning>,
@@ -98,7 +98,7 @@ impl<'a> Parser<'a> {
     }
 
     fn is_at_end(&self) -> bool {
-        self.peek().token_type == Eof
+        self.current >= self.tokens.len() - 1
     }
 
     fn check(&self, expected: TokenType) -> bool {
@@ -254,7 +254,7 @@ impl<'a> Parser<'a> {
 
     // Get the parser back into a stable state after an error is found
     fn synchronize(&mut self) {
-        todo!()
+        todo!("synchronize")
     }
 
     // Parsing functions
@@ -290,6 +290,7 @@ impl<'a> Parser<'a> {
             Const => S::ConstantDefinition(self.constant()?),
             Use => S::Use(self.use_statement()?),
             Fn => S::Function(self.function()?),
+            Eof => S::Eof,
             // Note: for macros, everything that's some kind of statement is going to need to check when a macro is invoked,
             // And hand control over to it instead.
             // Note: private modules/namespaces may be added later
@@ -394,7 +395,6 @@ impl<'a> Parser<'a> {
             }
         };
 
-        // TODO: wrap in range type
         return Ok(self.wrap_array_type(item_type)?);
     }
 
@@ -417,15 +417,20 @@ impl<'a> Parser<'a> {
         use ast::Type;
 
         if self.is_next(UppercaseSelf) {
-            let path = self.type_path(vec![])?;
-            let generics = self.generic_arguments()?;
-
-            return Ok(Type::SelfKeyword { path, generics });
+            return Ok(Type::SelfKeyword {
+                path: self.type_path(vec![])?,
+                generics: self.generic_arguments()?,
+            });
+        } else if self.is_next(UppercaseSelf) {
+            return Ok(Type::SuperKeyword {
+                path: self.type_path(vec![])?,
+                generics: self.generic_arguments()?,
+            });
         } else if let Ok(name) = self.identifier() {
-            let path = self.type_path(vec![name])?;
-            let generics = self.generic_arguments()?;
-
-            return Ok(Type::Named { path, generics });
+            return Ok(Type::Named {
+                path: self.type_path(vec![name])?,
+                generics: self.generic_arguments()?,
+            });
         } else {
             return Err(Error::UnexpectedInContext(
                 "named type",
@@ -443,9 +448,10 @@ impl<'a> Parser<'a> {
         self.consume(TokenType::Identifier).map(ast::Identifier)
     }
 
+    /// Assumes `Fn` is already parsed
     fn function_declaration(&mut self) -> Result<ast::FunctionDeclaration<'a>> {
         Ok(ast::FunctionDeclaration {
-            name: self.after(Fn)?.identifier()?,
+            name: self.identifier()?,
             generics: self.generic_params()?,
             parameters: self
                 .after(LeftParen)?
@@ -960,22 +966,31 @@ impl<'a> Parser<'a> {
     }
 
     fn factor(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.unary()?;
+        let mut expr = self.left_unary()?;
 
         while let Some(operator) = self.matches(&[Slash, Star]) {
-            let right = self.unary()?;
+            let right = self.left_unary()?;
             expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
         }
 
         return Ok(expr);
     }
 
-    fn unary(&mut self) -> Result<ast::Expression<'a>> {
+    fn left_unary(&mut self) -> Result<ast::Expression<'a>> {
         if let Some(operator) = self.matches(&[Not, Minus]) {
-            let right = self.unary()?;
+            let right = self.left_unary()?;
             return Ok(ast::Expression::Unary(operator, Box::new(right)));
         }
 
+        return self.right_unary();
+    }
+    
+    fn right_unary(&mut self) -> Result<ast::Expression<'a>> {
+        let left = self.right_unary()?;
+        if let Some(operator) = self.matches(&[Question]) {
+            return Ok(ast::Expression::Unary(operator, Box::new(left)));
+        }
+        
         return self.function_call();
     }
 
