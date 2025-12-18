@@ -133,6 +133,7 @@ impl<'a> Scanner<'a> {
             ']' => RightBracket,
             '{' => LeftBrace,
             '}' => RightBrace,
+            '~' => Tilde,
             ':' => match self.peek() {
                 Some(':') => {
                     self.next();
@@ -140,7 +141,12 @@ impl<'a> Scanner<'a> {
                 },
                 Some('>') => {
                     self.next();
-                    ColonArrow
+                    if self.peek() == Some('>') {
+                        self.next();
+                        ColonGreaterGreater
+                    } else {
+                        ColonGreater
+                    }
                 },
                 _ => Colon
             },
@@ -241,11 +247,16 @@ impl<'a> Scanner<'a> {
                 }
             },
             '<' => {
-                if self.peek() == Some('=') {
-                    self.next();
-                    LessEquals
-                } else {
-                    Less
+                match self.peek() {
+                    Some('=') => {
+                        self.next();
+                        LessEquals
+                    },
+                    Some('<') => {
+                        self.next();
+                        LessLess
+                    },
+                    _ => Less
                 }
             },
             '>' => {
@@ -261,7 +272,7 @@ impl<'a> Scanner<'a> {
                     self.next();
                     BangEquals
                 } else {
-                    Error
+                    Bang
                 }
             },
             'a' => self.keyword( &[("abstract", Abstract), ("and", And), ("as", As)]),
@@ -269,9 +280,9 @@ impl<'a> Scanner<'a> {
             'c' => self.keyword( &[("class", Class), ("const", Const), ("continue", Continue)]),
             'd' => self.keyword( &[("do", Do)]),
             'e' => self.keyword( &[("else", Else), ("enum", Enum), ("extend", Extend)]),
-            'f' => self.keyword( &[("false", False), ("fn", Fn), ("for", For), ("forever", Forever)]),
+            'f' => self.keyword( &[("false", False), ("fn", Fn), ("for", For)]),
             'i' => self.keyword( &[("if", If), ("in", In), ("interface", Interface), ("is", Is)]),
-            'l' => self.keyword( &[("let", Let)]),
+            'l' => self.keyword( &[("let", Let), ("loop", Loop)]),
             'm' => self.keyword( &[("macro", Macro), ("match", Match), ("mixin", Mixin)]),
             'n' => self.keyword( &[("never", Never), ("nil", Nil), ("not", Not)]),
             'o' => self.keyword( &[("of", Of), ("or", Or)]),

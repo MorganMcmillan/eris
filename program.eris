@@ -1,3 +1,348 @@
-fn main() {
-    if true { 1 } else { 0 }
+@Keywords
+abstract class Statement {
+    @annotateFields {
+        parent: @afterToken(Of)
+        with: @afterToken(With)
+        item_type: @afterToken(Colon)
+        value: @afterToken(Equals)
+    }
+
+    abstract class NewType {
+        type Statement
+        name: Identifier
+        generics: Generic[]
+
+        class Class {
+            type Statement = Field
+            | StaticField
+            | TypeDefinition
+            | Method
+            | StaticMethod
+            | NewType
+            
+            parent: Type?
+            with: Type[]?
+            body: Statement[]
+        }
+
+        class Interface {
+            type statement = PartialStaticField
+            | PartialTypeDefinition
+            | Method
+            | StaticMethod
+            | PartialStaticMethod
+            | PartialMethod
+            | NewType
+
+            @afterToken(Of)
+            parent: Type?
+            body: Statement[]
+        }
+
+        class AbstractClass {
+            type Statement = Class.Statement | Interface.Statement
+
+            @afterToken(Of)
+            parent: Type?
+            @afterToken(With)
+            with: Type[]?
+            body: Statement[]
+        }
+
+        class Mixin {
+            body: Class.Statement[]
+        }
+
+        class Enum {
+            type Value = nil
+            | @afterToken(Equals) Expression
+            | Tuple
+            | Object
+            type Statement = (Identifier, Value)
+            | Method
+            | StaticMethod
+            | Enum
+
+            body: Statement[]
+        }
+
+        @token(Type)
+        class TypeDefinition {
+            value: Type
+        }
+    }
+
+    @token(Const)
+    class Constant {
+        name: Identifier
+        item_type: Type
+        value: Expression
+    }
+
+    @token(Fn)
+    class Function {
+        name: Identifier
+        generics: Generic[]
+        parameters: Parameters
+        @afterToken(Colon)
+        return_type: Type?
+        body: FunctionStatement[]
+    }
+
+    class Use {}
+
+    class Eof {}
+}
+
+abstract class Expression {
+    abstract class Operator {
+        operator: Token.Operator
+
+        class Unary {
+            expr: Expression
+        }
+
+        class Binary {
+            left: Expression
+            right: Expression
+        }
+    }
+
+    class If {
+        ifBranch: ConditionalBlock
+        @afterToken(Else)
+        elseIfBranches: ConditionalBlock[]
+        @afterToken(Else)
+        elseBranch: Block?
+    }
+
+    class Match {
+        expr: Expression
+        @delimited("{}")
+        @commaSeparated
+        branches: MatchClause[]
+    }
+
+    class While {}
+
+    class For {}
+
+    class Forever {}
+
+    class Call {}
+
+    class Field {}
+
+    class Subscript {}
+
+    class Dereference {}
+
+    class Return {
+        expr: Expression?
+    }
+
+    class Break {
+        @afterToken(Colon)
+        label: Identifier?
+        expr: Expression?
+    }
+
+    class Continue {
+        @afterToken(Colon)
+        label: Identifier?
+    }
+
+    class Identifier {
+        token: Token
+        
+        fn name(): string { token.lexeme }
+    }
+
+    class Keyword {
+        token: LowercaseSelf | LowercaseSuper
+    }
+
+    type Literal =
+    usize
+    | fsize
+    | Nil
+    | True
+    | False
+    | Literal
+}
+
+class MatchClause {
+    name: Identifier?
+    destructure: Destructure?
+    item_type: Type?
+    guard_clause: Expression?
+}
+
+enum Destructure {
+    Tuple(matchClause[])
+    Array(ArrayDestructure[])
+    Object(ObjectDestructure[])
+}
+
+enum ArrayDestructure {
+    @afterToken(DotDotDot)
+    Splat(MatchClause?)
+    Plain(MatchClause)
+}
+
+class ObjectDestructure of MatchClause {
+    @afterToken(Equals)
+    field: Identifier?
+
+    fn field_name() -> string? {
+        field or name
+    }
+}
+
+abstract class Literal {
+    class String with Parse {
+        type EscapeChar = '\\' | '@'
+        static beginning: TokenType = BeginStringQuote
+
+        pieces: Vec<StringPiece>
+
+        static fn escape(esc: string) -> char {
+            match esc[1] {
+                'a' => '\x07'
+                'b' => '\x08'
+                'e' => '\x1b'
+                'f' => '\x0c'
+                'r' => '\r'
+                'n' => '\n'
+                't' => '\t'
+                'v' => '\v'
+                'u' => unicode(esc[2..])
+                'x' => hex_escape(esc[2..])
+                '0' => '\0'
+                other => other
+            }
+        }
+
+        static fn parse(parser: &Parser): Self {
+            let pieces = @map forever {
+                match parser.next().token_type {
+                    StringContents => parser.previous().lexeme
+                    Backslash => escape(parser.previous().lexeme),
+                    At => interpolation(parser)
+                    EndStringQuote => break
+                }
+            }
+
+            return { pieces }
+        }
+    }
+
+    @delimited("()")
+    class Tuple {
+        items: Expression[]
+    }
+
+    @delimited("[]")
+    class Array {
+        static class Comprehension {
+            expr: Expression?
+            for_loop: Expression.For
+        }
+
+        items: (Expression | Comprehension | Splat)[]
+    }
+
+    @delimited("{}")
+    class Object {
+        static class Field {
+            name: Identifier
+            value: Expression?
+        }
+
+        type Statement = Field
+        | Splat
+
+        @commaSeparated
+        fields: Statement[]
+    }
+
+    class InclusiveRange {
+        start: Expression?
+        @afterToken(DotDotEquals)
+        end: Expression?
+    }
+
+    class ExclusiveRange {
+        start: Expression?
+        @afterToken(DotDot)
+        end: Expression?
+    }
+}
+
+type FunctionStatement = Expression
+| Statement.Use
+| Statement.Constant
+| Let
+
+class Let {
+    matchClause: MatchClause
+    value: Expression
+}
+
+enum Type {
+    use Statement.NewType.*
+
+    Named {
+        root: Identifier | SelfKeyword | SuperKeyword
+        @each(@afterToken(Dot))
+        path: Identifier[]
+        generics: Generic[]
+    }
+    @afterToken(Interface)
+    @delimited("{}")
+    Interface(Interface.Statement[])
+    @delimited("()")
+    Tuple(Type[])
+    @delimited("{}")
+    Object(ObjectStatement[])
+    @syntax("@0 LeftBracket @1 RightBracket")
+    Array(Type, Expression)
+    @syntax("@0 LeftBracket RightBracket")
+    Slice(Type)
+
+    @afterToken(Ampersand)
+    Reference(Type)
+    @afterToken(Start)
+    Pointer(Type)
+
+    @syntax("Fn LeftParen @parameters RightParen ")
+    Function {
+        parameters: Type.Tuple
+        return_type: Type?
+    }
+
+    @separated(Ampersand)
+    @innerIfSingle
+    Intersection(Type[])
+
+    @separated(Pipe)
+    @innerIfSingle
+    Union(Type[])
+
+    @beforeToken(Question)
+    Optional(Type)
+
+    Literal(Literal)
+}
+
+extend Type.Optional with Desugar {
+    fn desugar() => Type.Union([self, Type.Literal(Nil)])
+}
+
+class Generic {
+    name: Identifier
+    @afterToken(Colon)
+    supertype: Type?
+    @afterToken(Equals)
+    default_type: Type?
 }

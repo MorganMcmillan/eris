@@ -144,7 +144,7 @@ impl<'a> Parser<'a> {
             Err(Error::UnexpectedToken(expected, self.peek().token_type))
         }
     }
-    
+
     fn consume_if(&mut self, predicate: fn(&TokenType) -> bool) -> Result<Token<'a>> {
         if predicate(&self.peek().token_type) {
             Ok(self.next())
@@ -267,6 +267,9 @@ impl<'a> Parser<'a> {
         return Ok(list);
     }
 
+    /// Consumes a block of arbitrary statements.
+    /// A block is defined as code surrounded by braces.\
+    /// Consumes `LeftBrace`.
     fn block<T: 'a>(
         &mut self,
         statement: fn(&mut Self) -> Result<T>,
@@ -276,8 +279,22 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn function_body(&mut self) -> Result<ast::StatementBlock<ast::FunctionStatement<'a>>> {
+        self.block(Self::function_statement)
+    }
+
     fn after(&mut self, expected: TokenType) -> Result<&mut Self> {
         self.consume(expected).map(|_| self)
+    }
+
+    fn before<T: 'a>(
+        &mut self,
+        expected: TokenType,
+        before: fn(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let item = before(self)?;
+        self.consume(expected)?;
+        return Ok(item);
     }
 
     // Get the parser back into a stable state after an error is found
@@ -290,6 +307,7 @@ impl<'a> Parser<'a> {
                     | Interface
                     | Abstract
                     | Mixin
+                    | Extend
                     | Static
                     | Fn
                     | Let
@@ -300,7 +318,7 @@ impl<'a> Parser<'a> {
                     | While
                     | Until
                     | For
-                    | Forever
+                    | Loop
                     | Return
             ) {
                 return;
@@ -341,7 +359,7 @@ impl<'a> Parser<'a> {
             Extend => S::Extend(self.extend_with()?),
             Enum => S::Enum(self.enum_statement()?),
             Type => S::TypeDefinition(self.type_definition()?),
-            Const => S::ConstantDefinition(self.constant()?),
+            Const => S::Constant(self.constant()?),
             Use => S::Use(self.use_statement()?),
             Fn => S::Function(self.function()?),
             Eof => S::Eof,
@@ -364,7 +382,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse generic parameters for a new type
+    /// Consumes `Less` if found, and returns an empty vec if not.
+    /// Parse generic parameters for a new type.
     fn generic_params(&mut self) -> Result<Vec<ast::Generic<'a>>> {
         if self.is_next(Less) {
             self.cs_list1(Self::generic_param, Greater)
@@ -407,17 +426,9 @@ impl<'a> Parser<'a> {
     }
 
     fn type_literal(&mut self) -> Result<ast::Type<'a>> {
+        // TODO: Fix parsing
         let item_type = if let Ok(named) = self.named_type() {
-            if self.is_next(LeftBrace) {
-                let body = self.block(Self::class_statement)?;
-                let object = ast::ObjectType {
-                    body,
-                    supertype: Some(Box::new(named)),
-                };
-                ast::Type::Object(object)
-            } else {
-                named
-            }
+            named
         } else {
             match self.peek().token_type {
                 Fn => {
@@ -588,43 +599,18 @@ impl<'a> Parser<'a> {
             DotDot => {
                 return Ok(Lit::ExclusiveRange(
                     None,
-                    self.primary_expression().ok().map(Box::new),
+                    self.expression_binding(255).ok().map(Box::new),
                 ));
             }
             DotDotEquals => {
                 return Ok(Lit::InclusiveRange(
                     None,
-                    self.primary_expression().ok().map(Box::new),
+                    self.expression_binding(255).ok().map(Box::new),
                 ));
             }
             // Todo: create a singular number token with a separate number type
-            number_type => self.number(self.previous())?,
+            _number_type => self.number(self.previous())?,
         })
-    }
-
-    fn assignment(&mut self) -> Result<ast::Assignment<'a>> {
-        let possibly_invalid_token = self.peek();
-        let target_expr = self.function_call()?;
-        let operator = self.consume_if(TokenType::is_assignment_operator)?;
-        let value = self.expression()?;
-
-        use ast::{AssignmentTarget::*, Expression as Expr};
-        let target = match target_expr {
-            Expr::Identifier(i) => Variable(i),
-            Expr::Field(object, field) => Field(*object, field),
-            Expr::Subscript { array, index } => Subscript {
-                array: *array,
-                index: *index,
-            },
-            Expr::Dereference(target) => Dereference(*target),
-            _ => return Err(Error::InvalidLeftValue(possibly_invalid_token.token_type)),
-        };
-
-        return Ok(ast::Assignment { target, value, operator });
-    }
-
-    fn return_statement(&mut self) -> Result<Option<ast::Expression<'a>>> {
-        Ok(self.after(Return)?.expression().ok())
     }
 
     /// Does not consume tokens
@@ -634,23 +620,7 @@ impl<'a> Parser<'a> {
         Ok(match self.peek().token_type {
             Use => Stmt::Use(self.skip().use_statement()?),
             Let => Stmt::Let(self.let_variable()?),
-            Forever => Stmt::Forever(self.forever_statement()?),
-            While | Until => Stmt::While(self.while_statement()?),
-            For => Stmt::For(self.for_statement()?),
-            Return => Stmt::Return(self.return_statement()?),
-            Break => Stmt::Break(self.break_statement()?),
-            Continue => Stmt::Continue(self.continue_statement()?),
-            // TODO: I may just make assignment an expression because it's easier to handle
-            _ => {
-                // Needed because `assignment` consumes an expression
-                self.save_current();
-                if let Ok(assignment) = self.assignment() {
-                    Stmt::Assignment(assignment)
-                } else {
-                    self.load_current();
-                    Stmt::Expression(self.expression()?)
-                }
-            }
+            _ => Stmt::Expression(self.expression()?),
         })
     }
 
@@ -701,9 +671,9 @@ impl<'a> Parser<'a> {
                     Stmt::TypeRequirement(name)
                 }
             }
-            Fn => Stmt::Method(self.function()?),
+            Fn => self.partial_function()?,
             Static => match self.next().token_type {
-                Fn => Stmt::StaticMethod(self.function()?),
+                Fn => self.partial_function()?.to_static(),
                 Identifier => self.partial_static_field()?,
                 unexpected => {
                     return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected));
@@ -712,6 +682,18 @@ impl<'a> Parser<'a> {
             unexpected => {
                 return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected));
             }
+        })
+    }
+
+    fn partial_function(&mut self) -> Result<ast::InterfaceStatement<'a>> {
+        let declaration = self.function_declaration()?;
+        Ok(if self.peek().token_type == RightBrace {
+            ast::InterfaceStatement::Method(ast::FunctionDefinition {
+                declaration,
+                body: self.function_body()?,
+            })
+        } else {
+            ast::InterfaceStatement::MethodRequirement(declaration)
         })
     }
 
@@ -727,7 +709,22 @@ impl<'a> Parser<'a> {
                 Identifier => Stmt::StaticField(self.static_field()?),
                 unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected)),
             },
+            Class => Stmt::NestedClass(self.nested_class()?),
             unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected)),
+        })
+    }
+
+    /// Assumes `Class` was consumed
+    /// Nested classes directly inherit from the class they are contained in.
+    /// Further processing needed
+    fn nested_class(&mut self) -> Result<ast::NestedClass<'a>> {
+        Ok(ast::NestedClass {
+            name: self.identifier()?,
+            generics: self.generic_params()?,
+            with: self
+                .if_next(With, |p| p.separated_while1(Comma, Self::named_type))?
+                .unwrap_or_else(Vec::new),
+            body: self.block(Self::class_statement)?,
         })
     }
 
@@ -750,7 +747,7 @@ impl<'a> Parser<'a> {
             return Ok(Stmt::StaticDefinition(ast::StaticField {
                 name,
                 item_type,
-                value
+                value,
             }));
         }
 
@@ -838,11 +835,11 @@ impl<'a> Parser<'a> {
         self.after(Do)?.block(Self::function_statement)
     }
 
-    fn forever_statement(&mut self) -> Result<ast::Block<'a>> {
-        self.after(Forever)?.block(Self::function_statement)
+    fn loop_expr(&mut self) -> Result<ast::Block<'a>> {
+        self.after(Loop)?.block(Self::function_statement)
     }
 
-    fn while_statement(&mut self) -> Result<ast::WhileStatement<'a>> {
+    fn while_expr(&mut self) -> Result<ast::WhileExpression<'a>> {
         let invert_condition = if self.is_next(Until) {
             true
         } else {
@@ -850,7 +847,7 @@ impl<'a> Parser<'a> {
             false
         };
         let lexeme = self.previous().lexeme;
-        
+
         let mut condition = self.expression()?;
         if invert_condition {
             let not_token = Token {
@@ -860,39 +857,41 @@ impl<'a> Parser<'a> {
             condition = ast::Expression::Unary(not_token, Box::new(condition));
         }
 
-        return Ok(ast::WhileStatement {
-            condition,
+        return Ok(ast::WhileExpression {
+            condition: Box::new(condition),
             body: self.block(Self::function_statement)?,
             else_branch: self.if_next(Else, |p| p.block(Self::function_statement))?,
         });
     }
 
-    fn for_statement(&mut self) -> Result<ast::ForStatement<'a>> {
+    /// Consumes `For`
+    fn for_expr(&mut self) -> Result<ast::ForExpression<'a>> {
         // Kinda cursed but still looks nice
         self.consume(For)?;
 
         if let Ok(loop_variable) = self.match_clause() {
             if self.is_next(In) {
-                return Ok(ast::ForStatement {
-                    loop_variable: Some(loop_variable),
-                    iterator: self.expression()?,
+                return Ok(ast::ForExpression {
+                    loop_variable: Some(Box::new(loop_variable)),
+                    iterator: Box::new(self.expression()?),
                     body: self.block(Self::function_statement)?,
                 });
             } else {
-                return Ok(ast::ForStatement {
+                return Ok(ast::ForExpression {
                     loop_variable: None,
                     iterator: loop_variable
                         .as_literal()
                         .map(ast::Expression::Literal)
+                        .map(Box::new)
                         .ok_or_else(|| Error::Other("Invalid literal in for loop.".to_owned()))?,
                     body: self.block(Self::function_statement)?,
                 });
             }
         }
 
-        return Ok(ast::ForStatement {
+        return Ok(ast::ForExpression {
             loop_variable: None,
-            iterator: self.expression()?,
+            iterator: Box::new(self.expression()?),
             body: self.block(Self::function_statement)?,
         });
     }
@@ -912,114 +911,43 @@ impl<'a> Parser<'a> {
 
     // Expressions
 
-    fn binary_operator(&mut self, precedence: fn(&mut Self) -> Result<ast::Expression<'a>>, token_types: &[TokenType]) -> Result<ast::Expression<'a>> {
-        let mut expr = precedence(self)?;
-
-        while let Some(operator) = self.matches(token_types) {
-            let right = precedence(self)?;
-            expr = ast::Expression::Binary(operator, Box::new(expr), Box::new(right));
-        }
-
-        return Ok(expr);
-    }
-
-    // Currently uses recursive descent
     pub fn expression(&mut self) -> Result<ast::Expression<'a>> {
-        self.or()
+        self.expression_binding(0)
     }
 
-    fn or(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::and, &[Or])
-    }
-
-    fn and(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::is, &[And])
-    }
-
-    fn is(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::equality, &[Is])
-    }
-
-    fn equality(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::comparison, &[EqualsEquals, BangEquals])
-    }
-
-    fn comparison(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::in_operator, &[Greater, GreaterEquals, Less, LessEquals])
-    }
-
-    fn in_operator(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::term, &[In])
-    }
-
-    fn term(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::factor, &[Plus, Minus])
-    }
-
-    fn factor(&mut self) -> Result<ast::Expression<'a>> {
-        self.binary_operator(Self::left_unary, &[Star, Slash, Percent])
-    }
-
-    fn left_unary(&mut self) -> Result<ast::Expression<'a>> {
-        if let Some(operator) = self.matches(&[Not, Minus]) {
-            let right = self.left_unary()?;
-            return Ok(ast::Expression::Unary(operator, Box::new(right)));
-        }
-
-        return self.right_unary();
-    }
-    
-    fn right_unary(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.function_call()?;
-        
-        while let Some(operator) = self.matches(&[Question]) {
-            expr = ast::Expression::Unary(operator, Box::new(expr));
-        }
-
-        return Ok(expr);
-    }
-
-    fn function_call(&mut self) -> Result<ast::Expression<'a>> {
-        let mut expr = self.primary_expression()?;
-
-        loop {
-            if self.is_next(LeftParen) {
-                expr = self.finish_call(expr)?;
-            } else if self.is_next(Dot) {
-                if let Ok(name) = self.identifier() {
-                    expr = ast::Expression::Field(Box::new(expr), name);
-                } else if self.is_next(Star) {
-                    expr = ast::Expression::Dereference(Box::new(expr));
-                } else {
-                    return Err(Error::UnexpectedInContext(
-                        "field access",
-                        self.peek().token_type,
-                    ));
-                }
-            } else {
-                break;
-            }
-        }
-
-        return Ok(expr);
-    }
-
-    fn finish_call(&mut self, expr: ast::Expression<'a>) -> Result<ast::Expression<'a>> {
-        Ok(ast::Expression::FunctionCall {
-            function: Box::new(expr),
-            arguments: self.cs_list0(Self::expression, RightParen)?,
-        })
-    }
-
-    fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
+    fn expression_binding(&mut self, min_bp: u8) -> Result<ast::Expression<'a>> {
         use ast::Expression as Expr;
-        
-        let expr = match self.peek().token_type {
-            Identifier => Expr::Identifier(self.identifier()?),
+
+        let lhs_token = self.peek().token_type;
+        let mut lhs = match lhs_token {
+            Identifier => ast::Expression::Identifier(self.identifier()?),
+            Match => Expr::Match(self.match_expression()?),
             If | Unless => Expr::If(self.if_expression()?),
             Do => Expr::Block(self.do_expression()?),
+            While | Until => Expr::While(self.while_expr()?),
+            For => Expr::For(self.for_expr()?),
+            Loop => Expr::Loop(self.loop_expr()?),
+            Return => {
+                self.next();
+                Expr::Return(self.expression().ok().map(Box::new))
+            },
+            Break => {
+                self.next();
+                Expr::Break(self.if_next(Colon, Self::identifier)?, self.expression().ok().map(Box::new))
+            },
+            Continue => {
+                self.next();
+                Expr::Continue(self.if_next(Colon, Self::identifier)?)
+            },
+            // TODO: handle control-flow expressions
+            unary @ (Not | Minus | Tilde) => {
+                let bp = unary.prefix_binding_power().unwrap().1;
+                let rhs = self.expression_binding(bp)?;
+                ast::Expression::Unary(self.next(), Box::new(rhs))
+            }
             _ => {
                 let literal = self.literal()?;
+                
                 if let ast::Literal::Tuple(ref tuple) = literal {
                     if tuple.len() == 1 {
                         tuple[0].clone()
@@ -1029,54 +957,152 @@ impl<'a> Parser<'a> {
                 } else {
                     Expr::Literal(literal)
                 }
-            }
+            },
         };
 
+        // TODO: handle range precedence
         use ast::Literal::{ExclusiveRange, InclusiveRange};
-        let possible_range = if self.is_next(DotDot) {
+        lhs = if self.is_next(DotDot) {
             Expr::Literal(ExclusiveRange(
-                Some(Box::new(expr)),
-                self.primary_expression().ok().map(Box::new),
+                Some(Box::new(lhs)),
+                self.expression_binding(255).ok().map(Box::new),
             ))
         } else if self.is_next(DotDotEquals) {
             Expr::Literal(InclusiveRange(
-                Some(Box::new(expr)),
-                self.primary_expression().ok().map(Box::new),
+                Some(Box::new(lhs)),
+                self.expression_binding(255).ok().map(Box::new),
             ))
         } else {
-            expr
+            lhs
         };
 
-        return Ok(possible_range);
+        loop {
+            let op = self.peek();
+            if let Some((postfix_bp, ())) = op.token_type.postfix_binding_power() {
+                if postfix_bp < min_bp {
+                    break;
+                }
+                self.next();
+
+                lhs = match op.token_type {
+                    Question => ast::Expression::Try(Box::new(lhs)),
+                    Bang => ast::Expression::TryErr(Box::new(lhs)),
+                    LeftBracket => ast::Expression::Subscript {
+                        array: Box::new(lhs),
+                        index: Box::new(self.before(RightBracket, Self::expression)?),
+                    },
+                    LeftParen => ast::Expression::FunctionCall {
+                        function: Box::new(lhs),
+                        arguments: self.cs_list0(Self::expression, RightParen)?,
+                    },
+                    Dot => match self.next().token_type {
+                        Identifier => {
+                            ast::Expression::Field(Box::new(lhs), ast::Identifier(self.previous()))
+                        }
+                        Star => ast::Expression::Dereference(Box::new(lhs)),
+                        unexpected => {
+                            return Err(Error::UnexpectedInContext("Field access", unexpected));
+                        }
+                    },
+                    _ => lhs,
+                };
+                continue;
+            }
+
+            if op.token_type.is_assignment_operator() {
+                use ast::AssignmentTarget::*;
+
+                let assignment_target = match lhs {
+                    Expr::Identifier(id) => Identifier(id),
+                    Expr::Field(object, field) => Field(*object, field),
+                    Expr::Subscript { array, index } => Subscript {
+                        array: *array,
+                        index: *index,
+                    },
+                    Expr::Dereference(deref) => Dereference(*deref),
+                    _ => return Err(Error::InvalidLeftValue(lhs_token)),
+                };
+                lhs = Expr::Assignment(
+                    op,
+                    Box::new(assignment_target),
+                    Box::new(self.expression()?),
+                );
+            }
+
+            if let Some((left_bp, right_bp)) = op.token_type.infix_binding_power() {
+                if left_bp < min_bp {
+                    break;
+                }
+                self.next();
+
+                lhs = match op.token_type {
+                    // Desugar into nested function call
+                    ColonGreater => {
+                        let Expr::FunctionCall {
+                            function,
+                            mut arguments,
+                        } = self.expression_binding(right_bp)?
+                        else {
+                            return Err(Error::ExpectedFunctionCall);
+                        };
+                        arguments.insert(0, lhs);
+                        Expr::FunctionCall {
+                            function,
+                            arguments,
+                        }
+                    }
+                    ColonGreaterGreater => {
+                        let Expr::FunctionCall {
+                            function,
+                            mut arguments,
+                        } = self.expression_binding(right_bp)?
+                        else {
+                            return Err(Error::ExpectedFunctionCall);
+                        };
+                        arguments.push(lhs);
+                        Expr::FunctionCall {
+                            function,
+                            arguments,
+                        }
+                    },
+                    As => Expr::As(Box::new(lhs), Box::new(self.type_literal()?)),
+                    Is => Expr::Is(Box::new(lhs), Box::new(self.type_literal()?)),
+                    _ => Expr::Binary(op, Box::new(lhs), Box::new(self.expression_binding(right_bp)?))
+                }
+            }
+        }
+
+        return Ok(lhs);
     }
-    
+
     // Does not assume `If` has been consumed
     fn if_expression(&mut self) -> Result<ast::IfExpression<'a>> {
-        let if_block = ast::ConditionalBlock{
+        let if_block = ast::ConditionalBlock {
             condition: Box::new(self.if_condition()?),
-            body: self.after(LeftBrace)?.block(Self::function_statement)?
+            body: self.block(Self::function_statement)?,
         };
 
         let mut conditional_branches = vec![if_block];
-        
+
         let mut else_branch = None;
         while self.is_next(Else) {
             let condition = self.if_condition();
-            let body = self.after(LeftBrace)?.block(Self::function_statement)?;
+            let body = self.block(Self::function_statement)?;
             if let Ok(condition) = condition {
                 let else_if_block = ast::ConditionalBlock {
                     condition: Box::new(condition),
-                    body
+                    body,
                 };
                 conditional_branches.push(else_if_block);
             } else {
                 else_branch = Some(body);
+                break;
             }
         }
-        
+
         return Ok(ast::IfExpression {
             conditional_branches,
-            else_branch
+            else_branch,
         });
     }
 
@@ -1201,8 +1227,6 @@ impl<'a> Parser<'a> {
             Some(self.identifier()?)
         };
 
-        println!("Current token: {:?}", self.peek().token_type);
-
         let destructure = if name.is_some() {
             self.if_next(At, Self::destructure)?
         } else {
@@ -1212,8 +1236,6 @@ impl<'a> Parser<'a> {
         if name.is_some() || destructure.is_some() {
             item_type = self.if_next(Colon, Self::parse_type)?;
         }
-
-        println!("Token after: {:?}", self.peek().token_type);
 
         let guard_clause = if matches!(self.peek().token_type, If | Unless) {
             Some(self.if_condition()?)
@@ -1251,8 +1273,8 @@ impl<'a> Parser<'a> {
         return Ok(condition);
     }
 
-    fn break_statement(&mut self) -> Result<ast::BreakStatement<'a>> {
-        Ok(ast::BreakStatement {
+    fn break_statement(&mut self) -> Result<ast::Break<'a>> {
+        Ok(ast::Break {
             label: self.after(Break)?.if_next(Colon, Self::identifier)?,
             value: self.expression().ok(),
         })
@@ -1328,6 +1350,25 @@ impl<'a> Parser<'a> {
             return_type: self.if_next(Colon, Self::parse_type)?.map(Box::new),
         })
     }
+    
+    fn match_expression(&mut self) -> Result<ast::MatchExpression<'a>> {
+        Ok(ast::MatchExpression {
+            input: Box::new(self.expression()?),
+            match_arms: self.after(LeftBrace)?.cs_list1(Self::match_arm, RightBrace)?
+        })
+    }
+
+    fn match_arm(&mut self) -> Result<(ast::MatchClause<'a>, ast::Expression<'a>)> {
+        let clause = self.match_clause()?;
+        self.consume(MinusArrow)?;
+        let expr = if self.peek().token_type == LeftBrace {
+            ast::Expression::Block(self.function_body()?)
+        } else {
+            self.expression()?
+        };
+
+        return Ok((clause, expr));
+    }
 }
 
 fn get_char(string: &str, index: usize) -> Option<char> {
@@ -1361,6 +1402,7 @@ pub enum Error {
     InvalidLeftValue(TokenType),
     InvalidMatchClause,
     Other(std::string::String),
+    ExpectedFunctionCall,
 }
 
 type Result<T> = std::result::Result<T, Error>;

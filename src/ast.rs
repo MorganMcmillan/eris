@@ -1,3 +1,5 @@
+use core::panic;
+
 use crate::token::Token;
 
 #[derive(Clone, Debug)]
@@ -9,10 +11,9 @@ pub enum Statement<'a> {
     Enum(Enum<'a>),
     Extend(ExtendWith<'a>),
     TypeDefinition(TypeDefinition<'a>),
-    ConstantDefinition(ConstAssignment<'a>),
+    Constant(ConstAssignment<'a>),
     Function(FunctionDefinition<'a>),
     Use(UsePath<'a>),
-    Constant(ConstAssignment<'a>),
     Eof
 }
 
@@ -133,34 +134,27 @@ pub enum FunctionStatement<'a> {
     // Note: check for expression statement which don't cause side-effects or are not the last statement in the block
     Expression(Expression<'a>),
     Let(LetStatement<'a>),
-    Assignment(Assignment<'a>),
-    Return(Option<Expression<'a>>),
-    Forever(Block<'a>),
-    While(WhileStatement<'a>),
-    For(ForStatement<'a>),
-    Break(BreakStatement<'a>),
-    Continue(Option<Identifier<'a>>),
     Use(UsePath<'a>),
 }
 
 #[derive(Clone, Debug)]
-pub struct WhileStatement<'a> {
-    pub condition: Expression<'a>,
+pub struct WhileExpression<'a> {
+    pub condition: Box<Expression<'a>>,
     pub body: Block<'a>,
     /// Used for when a labeled while block ends by the condition evaluating to false
     pub else_branch: Option<Block<'a>>
 }
 
 #[derive(Clone, Debug)]
-pub struct ForStatement<'a> {
-    pub loop_variable: Option<MatchClause<'a>>,
+pub struct ForExpression<'a> {
+    pub loop_variable: Option<Box<MatchClause<'a>>>,
     /// If no "in" is found and an identifier was parsed, promote that identifier to an expression
-    pub iterator: Expression<'a>,
+    pub iterator: Box<Expression<'a>>,
     pub body: Block<'a>
 }
 
 #[derive(Clone, Debug)]
-pub struct BreakStatement<'a> {
+pub struct Break<'a> {
     pub label: Option<Identifier<'a>>,
     pub value: Option<Expression<'a>>
 }
@@ -169,24 +163,6 @@ pub struct BreakStatement<'a> {
 pub struct LetStatement<'a> {
     pub clause: MatchClause<'a>,
     pub value: Option<Expression<'a>>
-}
-
-#[derive(Clone, Debug)]
-pub struct Assignment<'a> {
-    pub target: AssignmentTarget<'a>,
-    pub value: Expression<'a>,
-    pub operator: Token<'a>
-}
-
-#[derive(Clone, Debug)]
-pub enum AssignmentTarget<'a> {
-    Variable(Identifier<'a>),
-    Field(Expression<'a>, Identifier<'a>),
-    Subscript{
-        array: Expression<'a>,
-        index: Expression<'a>
-    },
-    Dereference(Expression<'a>)
 }
 
 #[derive(Clone, Debug)]
@@ -221,6 +197,9 @@ pub enum InterpolatedStringPiece<'a> {
 #[derive(Clone, Debug)]
 pub enum Expression<'a> {
     Block(Block<'a>),
+    As(Box<Expression<'a>>, Box<Type<'a>>),
+    Is(Box<Expression<'a>>, Box<Type<'a>>),
+    Assignment(Token<'a>, Box<AssignmentTarget<'a>>, Box<Expression<'a>>),
     Binary(Token<'a>, Box<Expression<'a>>, Box<Expression<'a>>),
     Unary(Token<'a>, Box<Expression<'a>>),
     /// "object.foo"
@@ -239,11 +218,30 @@ pub enum Expression<'a> {
     },
     /// "pointer.*"
     Dereference(Box<Expression<'a>>),
+    Try(Box<Expression<'a>>),
+    TryErr(Box<Expression<'a>>),
     If(IfExpression<'a>),
+    While(WhileExpression<'a>),
+    For(ForExpression<'a>),
+    Loop(Block<'a>),
     Match(MatchExpression<'a>),
+    Return(Option<Box<Expression<'a>>>),
+    Break(Option<Identifier<'a>>, Option<Box<Expression<'a>>>),
+    Continue(Option<Identifier<'a>>),
     Identifier(Identifier<'a>),
     With(WithExpression<'a>),
     Literal(Literal<'a>)
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignmentTarget<'a> {
+    Identifier(Identifier<'a>),
+    Field(Expression<'a>, Identifier<'a>),
+    Subscript {
+        array: Expression<'a>,
+        index: Expression<'a>
+    },
+    Dereference(Expression<'a>)
 }
 
 #[derive(Clone, Debug)]
@@ -329,8 +327,8 @@ pub struct Generic<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Class<'a> {
-    pub generics: Vec<Generic<'a>>,
     pub name: Identifier<'a>,
+    pub generics: Vec<Generic<'a>>,
     pub parent: Option<Type<'a>>,
     pub with: Vec<Type<'a>>,
     pub body: ClassBody<'a>
@@ -345,7 +343,16 @@ pub enum ClassStatement<'a> {
     Field(Field<'a>),
     TypeDefinition(TypeDefinition<'a>),
     Method(FunctionDefinition<'a>),
-    StaticMethod(FunctionDefinition<'a>)
+    StaticMethod(FunctionDefinition<'a>),
+    NestedClass(NestedClass<'a>)
+}
+
+#[derive(Clone, Debug)]
+pub struct NestedClass<'a> {
+    pub name: Identifier<'a>,
+    pub generics: Vec<Generic<'a>>,
+    pub with: Vec<Type<'a>>,
+    pub body: ClassBody<'a>
 }
 
 #[derive(Clone, Debug)]
@@ -387,6 +394,16 @@ pub enum InterfaceStatement<'a> {
     StaticMethod(FunctionDefinition<'a>),
     MethodRequirement(FunctionDeclaration<'a>),
     Method(FunctionDefinition<'a>)
+}
+impl<'a> InterfaceStatement<'a> {
+    pub(crate) fn to_static(self) -> InterfaceStatement<'a> {
+        match self {
+            Self::Method(m) => Self::StaticMethod(m),
+            Self::MethodRequirement(m) => Self::StaticMethodRequirement(m),
+            Self::Field(Field { name, item_type }) => Self::StaticRequirement(PartialStaticField { name, item_type }),
+            _ => panic!("Invalid conversion to static")
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

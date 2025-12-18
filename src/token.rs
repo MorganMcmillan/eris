@@ -8,6 +8,8 @@ pub enum TokenType {
     At,
     Hash,
     Question,
+    Bang,
+    Tilde,
     // Matching pairs of tokens
     Dot,
     DotDot,
@@ -15,7 +17,10 @@ pub enum TokenType {
     DotDotEquals,
     Colon,
     ColonColon,
-    ColonArrow,
+    ColonGreater,
+    ColonGreaterGreater,
+    LessLess,
+    GreaterGreater, // Note: not scanned directly, but constructed by the parser during parsing
     // Potential multi character tokens
     LeftParen,
     RightParen,
@@ -67,7 +72,7 @@ pub enum TokenType {
     False,
     Fn,
     For,
-    Forever,
+    Loop,
     If,
     In,
     Interface,
@@ -114,8 +119,6 @@ pub enum TokenType {
 }
 
 impl TokenType {
-    // Predicates
-
     pub fn is_assignment_operator(&self) -> bool {
         use TokenType::*;
         matches!(self,
@@ -131,6 +134,51 @@ impl TokenType {
             | PlusPlusEquals
             | StarStarEquals
         )
+    }
+
+    pub fn infix_binding_power(&self) -> Option<(u8, u8)> {
+        use TokenType::*;
+        let bp = match *self {
+            Or => (1, 2),
+            And => (3, 4),
+            Is => (5, 6),
+            Less | LessEquals | Greater | GreaterEquals => (6, 7),
+            EqualsEquals | BangEquals => (8, 9),
+            Pipe => (10, 11),
+            Carat => (12, 13),
+            Ampersand => (14, 15),
+            LessLess | GreaterGreater => (16, 17),
+            PlusPlus => (19, 18),
+            StarStar => (21, 20),
+            In => (22, 23),
+            Plus | Minus => (24, 25),
+            Star | Slash | Percent => (26, 27),
+            As => (28, 29),
+            // After question
+            ColonGreater | ColonGreaterGreater => (32, 33),
+            _ => return None
+        };
+        return Some(bp)
+    }
+
+    pub fn prefix_binding_power(&self) -> Option<((), u8)> {
+        use TokenType::*;
+        // After As
+        match *self {
+            Not | Minus | Tilde | Ampersand => Some(((), 30)),
+            _ => None
+        }
+    }
+    
+    pub fn postfix_binding_power(&self) -> Option<(u8, ())> {
+        use TokenType::*;
+        match *self {
+            // after unary
+            Question | Bang => Some((31, ())),
+            // After pipe operators
+            Dot | LeftParen | LeftBracket => Some((34, ())),
+            _ => None
+        }
     }
 }
 
