@@ -915,12 +915,11 @@ impl<'a> Parser<'a> {
         self.expression_binding(0)
     }
 
-    fn expression_binding(&mut self, min_bp: u8) -> Result<ast::Expression<'a>> {
+    fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
         use ast::Expression as Expr;
 
-        let lhs_token = self.peek().token_type;
-        let mut lhs = match lhs_token {
-            Identifier => ast::Expression::Identifier(self.identifier()?),
+        Ok(match self.next().token_type {
+            Identifier => Expr::Identifier(self.identifier()?),
             Match => Expr::Match(self.match_expression()?),
             If | Unless => Expr::If(self.if_expression()?),
             Do => Expr::Block(self.do_expression()?),
@@ -939,11 +938,12 @@ impl<'a> Parser<'a> {
                 self.next();
                 Expr::Continue(self.if_next(Colon, Self::identifier)?)
             },
-            // TODO: handle control-flow expressions
+            DotDot => todo!(),
+            DotDotEquals => todo!(),
             unary @ (Not | Minus | Tilde) => {
                 let bp = unary.prefix_binding_power().unwrap().1;
                 let rhs = self.expression_binding(bp)?;
-                ast::Expression::Unary(self.next(), Box::new(rhs))
+                Expr::Unary(self.next(), Box::new(rhs))
             }
             _ => {
                 let literal = self.literal()?;
@@ -957,20 +957,27 @@ impl<'a> Parser<'a> {
                 } else {
                     Expr::Literal(literal)
                 }
-            },
-        };
+            }
+        })
+    }
+
+    fn expression_binding(&mut self, min_bp: u8) -> Result<ast::Expression<'a>> {
+        use ast::Expression as Expr;
+
+        let lhs_token = self.peek().token_type;
+        let mut lhs = self.primary_expression()?;
 
         // TODO: handle range precedence
         use ast::Literal::{ExclusiveRange, InclusiveRange};
         lhs = if self.is_next(DotDot) {
             Expr::Literal(ExclusiveRange(
                 Some(Box::new(lhs)),
-                self.expression_binding(255).ok().map(Box::new),
+                self.primary_expression().ok().map(Box::new),
             ))
         } else if self.is_next(DotDotEquals) {
             Expr::Literal(InclusiveRange(
                 Some(Box::new(lhs)),
-                self.expression_binding(255).ok().map(Box::new),
+                self.primary_expression().ok().map(Box::new),
             ))
         } else {
             lhs

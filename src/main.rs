@@ -4,6 +4,7 @@ mod scanner;
 mod token;
 mod ast;
 mod parser;
+mod s_expr;
 
 fn main() {
     let input_bytes = fs::read("program.eris").unwrap();
