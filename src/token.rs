@@ -219,7 +219,7 @@ pub enum Token<'a> {
     Eof,
 }
 
-impl Token {
+impl<'a> Token<'a> {
     pub fn is_assignment_operator(&self) -> bool {
         use Token::*;
         matches!(self,

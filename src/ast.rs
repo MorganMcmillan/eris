@@ -62,15 +62,11 @@ pub struct StatementBlock<T> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Identifier<'a>(pub Token<'a>);
-
-impl<'a> Identifier<'a> {
-    pub fn name(&self) -> &'a str { self.0.lexeme }
-}
+pub struct Identifier<'a>(pub &'a str);
 
 #[derive(Clone, Debug)]
 pub enum Type<'a> {
-    Named{
+    Named {
         path: Vec<Identifier<'a>>,
         generics: Vec<Type<'a>>
     },

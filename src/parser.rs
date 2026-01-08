@@ -1,10 +1,9 @@
+use std::{cell::{Cell, RefCell}, iter::Peekable};
+
 use crate::{
     ast,
     scanner::Scanner,
-    token::{
-        Token,
-        TokenType::{self, *},
-    },
+    token::Token::{self, *}
 };
 
 /// Used to unwrap tuples with a single value
@@ -30,25 +29,20 @@ impl<T: Clone> FirstOr<T> for Vec<T> {
 // It makes it so hard to manage internal state, even when its as simple as passing references to tokens.
 // I could wrap everything in a cell, but that's more trouble than it's worth.
 
+type Lexer<'a> = logos::Lexer<'a, Token<'a>>;
+
 pub struct Parser<'a> {
-    input: &'a str,
-    pub tokens: Vec<Token<'a>>,
-    /// Current token
-    current: usize,
-    saved: usize,
+    pub lexer: RefCell<Peekable<Lexer<'a>>>,
     warnings: Vec<Warning>,
-    errors: Vec<Error>,
+    errors: Vec<Error<'a>>,
 }
 
 // TODO: Implement Pratt Parsing
 // Current version uses recursive descent
 impl<'a> Parser<'a> {
-    pub fn new(input: &'a str) -> Self {
+    pub fn new(lexer: Lexer<'a>) -> Self {
         Self {
-            input,
-            tokens: Scanner::new(input).scan(),
-            current: 0,
-            saved: 0,
+            lexer: RefCell::new(lexer.peekable()),
             warnings: Vec::new(),
             errors: Vec::new(),
         }
@@ -57,13 +51,13 @@ impl<'a> Parser<'a> {
     // Error helpers
 
     // Call only when there's a fatal error
-    fn error(&mut self, message: std::string::String) -> Error {
+    fn error(&mut self, message: std::string::String) -> Error<'a> {
         let error = Error::Other(message);
         self.push_error(error.clone());
         return error;
     }
 
-    fn push_error(&mut self, error: Error) {
+    fn push_error(&mut self, error: Error<'a>) {
         self.errors.push(error);
     }
 
@@ -78,75 +72,61 @@ impl<'a> Parser<'a> {
     // Parser helpers
 
     pub fn peek(&self) -> Token<'a> {
-        self.tokens[self.current]
+        let mut lexer = self.lexer.borrow_mut();
+        let token = lexer.peek();
+        return token.unwrap_or(&Ok(Token::Eof)).unwrap_or(Token::Error);
     }
 
     // Consumes the token if it is present
-    fn is_next(&mut self, expected: TokenType) -> bool {
-        let is_next = self.peek().token_type == expected;
+    fn is_next(&self, expected: Token<'a>) -> bool {
+        let is_next = self.peek() == expected;
         if is_next {
-            self.current += 1
+            self.lexer.borrow_mut().next();
         }
         return is_next;
     }
 
     fn next(&mut self) -> Token<'a> {
-        let token = self.peek();
-        self.current += 1;
-        return token;
-    }
-
-    fn previous(&self) -> Token<'a> {
-        self.tokens[self.current - 1]
+        self.lexer.borrow_mut().next().unwrap_or(Ok(Token::Eof)).unwrap_or(Token::Error)
     }
 
     /// Skips a token and returns Self.
     /// Use only when you know the desired token is next
     fn skip(&mut self) -> &mut Self {
-        self.current += 1;
+        self.lexer.borrow_mut().next();
         return self;
     }
 
     fn is_at_end(&self) -> bool {
-        self.current >= self.tokens.len() - 1
+        self.lexer.borrow_mut().peek().is_none()
     }
 
-    fn check(&self, expected: TokenType) -> bool {
-        self.peek().token_type == expected
+    fn check(&mut self, expected: Token<'a>) -> bool {
+        self.peek() == expected
     }
 
-    pub fn matches(&mut self, token_types: &[TokenType]) -> Option<Token<'a>> {
-        for token_type in token_types {
-            if self.check(*token_type) {
+    pub fn matches(&mut self, tokens: &[Token<'a>]) -> Option<Token<'a>> {
+        for &token in tokens {
+            if self.check(token) {
                 return Some(self.next());
             }
         }
         return None;
     }
 
-    /// Saves the current token's position
-    /// Used to enable backtracking
-    fn save_current(&mut self) {
-        self.saved = self.current;
-    }
-
-    fn load_current(&mut self) {
-        self.current = self.saved;
-    }
-
     /// Consumes a token if it matches the expected token type
     /// Otherwise, returns an error.
     /// Does not consume the token if it does not match.
-    fn consume(&mut self, expected: TokenType) -> Result<Token<'a>> {
+    fn consume(&mut self, expected: Token<'a>) -> Result<Token<'a>> {
         if self.check(expected) {
             Ok(self.next())
         } else {
-            Err(Error::UnexpectedToken(expected, self.peek().token_type))
+            Err(Error::UnexpectedToken(expected, self.peek()))
         }
     }
 
-    fn consume_if(&mut self, predicate: fn(&TokenType) -> bool) -> Result<Token<'a>> {
-        if predicate(&self.peek().token_type) {
+    fn consume_if(&mut self, predicate: fn(&Token<'a>) -> bool) -> Result<Token<'a>> {
+        if predicate(&self.peek()) {
             Ok(self.next())
         } else {
             Err(Error::None)
@@ -157,7 +137,7 @@ impl<'a> Parser<'a> {
 
     fn if_next<T>(
         &mut self,
-        token: TokenType,
+        token: Token<'a>,
         then: fn(&mut Self) -> Result<T>,
     ) -> Result<Option<T>> {
         Ok(if self.is_next(token) {
@@ -170,7 +150,7 @@ impl<'a> Parser<'a> {
     fn list0<T: 'a>(
         &mut self,
         item: fn(&mut Self) -> Result<T>,
-        closing: TokenType,
+        closing: Token<'a>,
     ) -> Result<Vec<T>> {
         let mut list: Vec<T> = Vec::new();
 
@@ -182,9 +162,9 @@ impl<'a> Parser<'a> {
     }
 
     fn list1<T: 'a>(
-        &mut self,
+        &'a mut self,
         item: fn(&mut Self) -> Result<T>,
-        closing: TokenType,
+        closing: Token<'a>,
     ) -> Result<Vec<T>> {
         let mut list: Vec<T> = vec![item(self)?];
 
@@ -198,9 +178,9 @@ impl<'a> Parser<'a> {
     /// Consumes zero or more of a parsed item with a separator, followed by a closing token
     fn separated_list0<T: 'a>(
         &mut self,
-        separator: TokenType,
+        separator: Token<'a>,
         item: fn(&mut Self) -> Result<T>,
-        closing: TokenType,
+        closing: Token<'a>,
     ) -> Result<Vec<T>> {
         let mut list: Vec<T> = Vec::new();
 
@@ -221,9 +201,9 @@ impl<'a> Parser<'a> {
     /// Consumes one or more of a parsed item with a separator, followed by a closing token
     fn separated_list1<T: 'a>(
         &mut self,
-        separator: TokenType,
+        separator: Token<'a>,
         item: fn(&mut Self) -> Result<T>,
-        closing: TokenType,
+        closing: Token<'a>,
     ) -> Result<Vec<T>> {
         let mut list: Vec<T> = vec![item(self)?];
 
@@ -239,7 +219,7 @@ impl<'a> Parser<'a> {
     fn cs_list0<T: 'a>(
         &mut self,
         item: fn(&mut Self) -> Result<T>,
-        closing: TokenType,
+        closing: Token<'a>,
     ) -> Result<Vec<T>> {
         self.separated_list0(Comma, item, closing)
     }
@@ -248,14 +228,14 @@ impl<'a> Parser<'a> {
     fn cs_list1<T: 'a>(
         &mut self,
         item: fn(&mut Self) -> Result<T>,
-        closing: TokenType,
+        closing: Token<'a>,
     ) -> Result<Vec<T>> {
         self.separated_list1(Comma, item, closing)
     }
 
     fn separated_while1<T: 'a>(
         &mut self,
-        separator: TokenType,
+        separator: Token<'a>,
         item: fn(&mut Self) -> Result<T>,
     ) -> Result<Vec<T>> {
         let mut list: Vec<T> = vec![item(self)?];
@@ -283,13 +263,13 @@ impl<'a> Parser<'a> {
         self.block(Self::function_statement)
     }
 
-    fn after(&mut self, expected: TokenType) -> Result<&mut Self> {
+    fn after(&mut self, expected: Token<'a>) -> Result<&mut Self> {
         self.consume(expected).map(|_| self)
     }
 
     fn before<T: 'a>(
         &mut self,
-        expected: TokenType,
+        expected: Token<'a>,
         before: fn(&mut Self) -> Result<T>,
     ) -> Result<T> {
         let item = before(self)?;
@@ -302,7 +282,7 @@ impl<'a> Parser<'a> {
         self.next();
         while !self.is_at_end() {
             if matches!(
-                self.peek().token_type,
+                self.peek(),
                 Class
                     | Interface
                     | Abstract
@@ -351,7 +331,7 @@ impl<'a> Parser<'a> {
     fn statement(&mut self) -> Result<ast::Statement<'a>> {
         use ast::Statement as S;
 
-        Ok(match self.next().token_type {
+        Ok(match self.next() {
             Class => S::Class(self.class()?),
             Abstract => S::AbstractClass(self.abstract_class()?),
             Interface => S::Interface(self.interface()?),
@@ -430,7 +410,7 @@ impl<'a> Parser<'a> {
         let item_type = if let Ok(named) = self.named_type() {
             named
         } else {
-            match self.peek().token_type {
+            match self.peek() {
                 Fn => {
                     self.next();
                     ast::Type::Function(self.function_type()?)
@@ -499,13 +479,19 @@ impl<'a> Parser<'a> {
         } else {
             return Err(Error::UnexpectedInContext(
                 "named type",
-                self.peek().token_type,
+                self.peek(),
             ));
         }
     }
 
     fn identifier(&mut self) -> Result<ast::Identifier<'a>> {
-        self.consume(TokenType::Identifier).map(ast::Identifier)
+        let token = self.peek();
+        if let Identifier(ident) = token {
+            self.skip();
+            Ok(ast::Identifier(ident))
+        } else {
+            Err(Error::ExpectedIdentifier(token))
+        }
     }
 
     /// Assumes `Fn` is already parsed
@@ -532,10 +518,11 @@ impl<'a> Parser<'a> {
         self.cs_list0(Self::expression, RightBracket)
     }
 
+    // TODO: replace inside tokenizer
     fn number(&mut self, number: Token<'a>) -> Result<ast::Literal<'a>> {
-        type CharMapper = fn(char, u32) -> Option<u32>;
+/*         type CharMapper = fn(char, u32) -> Option<u32>;
 
-        let (mapping, radix): (&fn(char, u32) -> Option<u32>, u64) = match number.token_type {
+        let (mapping, radix): (&fn(char, u32) -> Option<u32>, u64) = match number {
             Base64 => (&(base_64 as CharMapper), 64),
             Base36 => (&(char::to_digit as CharMapper), 36),
             Base32 => (&(char::to_digit as fn(char, u32) -> Option<u32>), 32),
@@ -552,7 +539,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let lexeme = number.lexeme;
+        let lexeme = number;
         if lexeme.len() == 1 {
             let output = lexeme.chars().next().unwrap().to_digit(10).unwrap();
             return Ok(ast::Literal::Integer(output as u64));
@@ -581,13 +568,14 @@ impl<'a> Parser<'a> {
             parsed_number += mapping(digit, radix as u32).unwrap() as u64;
         }
 
-        return Ok(ast::Literal::Integer(parsed_number));
+        return Ok(ast::Literal::Integer(parsed_number)); */
+        todo!()
     }
 
     fn literal(&mut self) -> Result<ast::Literal<'a>> {
         use ast::Literal as Lit;
 
-        Ok(match self.next().token_type {
+        Ok(match self.next() {
             Nil => Lit::Nil,
             False => Lit::False,
             True => Lit::True,
@@ -617,7 +605,7 @@ impl<'a> Parser<'a> {
     fn function_statement(&mut self) -> Result<ast::FunctionStatement<'a>> {
         use ast::FunctionStatement as Stmt;
 
-        Ok(match self.peek().token_type {
+        Ok(match self.peek() {
             Use => Stmt::Use(self.skip().use_statement()?),
             Let => Stmt::Let(self.let_variable()?),
             _ => Stmt::Expression(self.expression()?),
@@ -660,8 +648,8 @@ impl<'a> Parser<'a> {
     fn interface_statement(&mut self) -> Result<ast::InterfaceStatement<'a>> {
         use ast::InterfaceStatement as Stmt;
 
-        Ok(match self.next().token_type {
-            Identifier => Stmt::Field(self.field()?),
+        Ok(match self.next() {
+            Identifier(name) => Stmt::Field(self.field(name)?),
             Type => {
                 let name = self.identifier()?;
                 if self.is_next(Equals) {
@@ -672,22 +660,22 @@ impl<'a> Parser<'a> {
                 }
             }
             Fn => self.partial_function()?,
-            Static => match self.next().token_type {
+            Static => match self.next() {
                 Fn => self.partial_function()?.to_static(),
-                Identifier => self.partial_static_field()?,
+                Identifier(name) => self.partial_static_field(name)?,
                 unexpected => {
-                    return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected));
+                    return Err(Error::UnexpectedToken(Token::Identifier("any"), unexpected));
                 }
             },
             unexpected => {
-                return Err(Error::UnexpectedToken(TokenType::Identifier, unexpected));
+                return Err(Error::UnexpectedToken(Token::Identifier("any"), unexpected));
             }
         })
     }
 
     fn partial_function(&mut self) -> Result<ast::InterfaceStatement<'a>> {
         let declaration = self.function_declaration()?;
-        Ok(if self.peek().token_type == RightBrace {
+        Ok(if self.peek() == RightBrace {
             ast::InterfaceStatement::Method(ast::FunctionDefinition {
                 declaration,
                 body: self.function_body()?,
@@ -700,17 +688,17 @@ impl<'a> Parser<'a> {
     fn class_statement(&mut self) -> Result<ast::ClassStatement<'a>> {
         use ast::ClassStatement as Stmt;
 
-        Ok(match self.next().token_type {
-            Identifier => Stmt::Field(self.field()?),
+        Ok(match self.next() {
+            Identifier(name) => Stmt::Field(self.field(name)?),
             Type => Stmt::TypeDefinition(self.type_definition()?),
             Fn => Stmt::Method(self.function()?),
-            Static => match self.next().token_type {
+            Static => match self.next() {
                 Fn => Stmt::StaticMethod(self.function()?),
-                Identifier => Stmt::StaticField(self.static_field()?),
-                unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected)),
+                Identifier(name) => Stmt::StaticField(self.static_field(name)?),
+                unexpected => return Err(Error::UnexpectedToken(Identifier("any"), unexpected)),
             },
             Class => Stmt::NestedClass(self.nested_class()?),
-            unexpected => return Err(Error::UnexpectedToken(Identifier, unexpected)),
+            unexpected => return Err(Error::UnexpectedToken(Identifier("any"), unexpected)),
         })
     }
 
@@ -729,18 +717,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Assumes `Identifier` was consumed
-    fn field(&mut self) -> Result<ast::Field<'a>> {
+    fn field(&mut self, name: &'a str) -> Result<ast::Field<'a>> {
         Ok(ast::Field {
-            name: ast::Identifier(self.previous()),
+            name: ast::Identifier(name),
             item_type: self.after(Colon)?.parse_type()?,
         })
     }
 
     /// Assumes `Identifier` was consumed
-    fn partial_static_field(&mut self) -> Result<ast::InterfaceStatement<'a>> {
+    fn partial_static_field(&mut self, name: &'a str) -> Result<ast::InterfaceStatement<'a>> {
         use ast::InterfaceStatement as Stmt;
 
-        let name = ast::Identifier(self.previous());
+        let name = ast::Identifier(name);
         let item_type = self.after(Colon)?.parse_type()?;
 
         if let Some(value) = self.if_next(Equals, Self::expression)? {
@@ -787,7 +775,7 @@ impl<'a> Parser<'a> {
         } else {
             return Err(Error::UnexpectedInContext(
                 "use statement",
-                self.peek().token_type,
+                self.peek(),
             ));
         }
     }
@@ -819,7 +807,7 @@ impl<'a> Parser<'a> {
             } else {
                 return Err(Error::UnexpectedInContext(
                     "use block",
-                    self.peek().token_type,
+                    self.peek(),
                 ));
             }
 
@@ -846,15 +834,10 @@ impl<'a> Parser<'a> {
             self.consume(While)?;
             false
         };
-        let lexeme = self.previous().lexeme;
 
         let mut condition = self.expression()?;
         if invert_condition {
-            let not_token = Token {
-                token_type: TokenType::Not,
-                lexeme,
-            };
-            condition = ast::Expression::Unary(not_token, Box::new(condition));
+            condition = ast::Expression::Unary(Not, Box::new(condition));
         }
 
         return Ok(ast::WhileExpression {
@@ -918,8 +901,8 @@ impl<'a> Parser<'a> {
     fn primary_expression(&mut self) -> Result<ast::Expression<'a>> {
         use ast::Expression as Expr;
 
-        Ok(match self.next().token_type {
-            Identifier => Expr::Identifier(self.identifier()?),
+        Ok(match self.next() {
+            Identifier(name) => Expr::Identifier(self.identifier()?),
             Match => Expr::Match(self.match_expression()?),
             If | Unless => Expr::If(self.if_expression()?),
             Do => Expr::Block(self.do_expression()?),
@@ -964,7 +947,7 @@ impl<'a> Parser<'a> {
     fn expression_binding(&mut self, min_bp: u8) -> Result<ast::Expression<'a>> {
         use ast::Expression as Expr;
 
-        let lhs_token = self.peek().token_type;
+        let lhs_token = self.peek();
         let mut lhs = self.primary_expression()?;
 
         // TODO: handle range precedence
@@ -985,13 +968,13 @@ impl<'a> Parser<'a> {
 
         loop {
             let op = self.peek();
-            if let Some((postfix_bp, ())) = op.token_type.postfix_binding_power() {
+            if let Some((postfix_bp, ())) = op.postfix_binding_power() {
                 if postfix_bp < min_bp {
                     break;
                 }
                 self.next();
 
-                lhs = match op.token_type {
+                lhs = match op {
                     Question => ast::Expression::Try(Box::new(lhs)),
                     Bang => ast::Expression::TryErr(Box::new(lhs)),
                     LeftBracket => ast::Expression::Subscript {
@@ -1002,9 +985,9 @@ impl<'a> Parser<'a> {
                         function: Box::new(lhs),
                         arguments: self.cs_list0(Self::expression, RightParen)?,
                     },
-                    Dot => match self.next().token_type {
-                        Identifier => {
-                            ast::Expression::Field(Box::new(lhs), ast::Identifier(self.previous()))
+                    Dot => match self.next() {
+                        Identifier(name) => {
+                            ast::Expression::Field(Box::new(lhs), ast::Identifier(name))
                         }
                         Star => ast::Expression::Dereference(Box::new(lhs)),
                         unexpected => {
@@ -1016,7 +999,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
-            if op.token_type.is_assignment_operator() {
+            if op.is_assignment_operator() {
                 use ast::AssignmentTarget::*;
 
                 let assignment_target = match lhs {
@@ -1036,13 +1019,13 @@ impl<'a> Parser<'a> {
                 );
             }
 
-            if let Some((left_bp, right_bp)) = op.token_type.infix_binding_power() {
+            if let Some((left_bp, right_bp)) = op.infix_binding_power() {
                 if left_bp < min_bp {
                     break;
                 }
                 self.next();
 
-                lhs = match op.token_type {
+                lhs = match op {
                     // Desugar into nested function call
                     ColonGreater => {
                         let Expr::FunctionCall {
@@ -1186,7 +1169,7 @@ impl<'a> Parser<'a> {
         use ast::EnumValue as Value;
 
         let name = self.identifier()?;
-        let value = match self.peek().token_type {
+        let value = match self.peek() {
             Equals => Value::Expression(self.skip().expression()?),
             LeftParen => Value::Tuple(self.skip().tuple_type()?),
             LeftBrace => Value::Object(self.skip().object_type()?),
@@ -1244,7 +1227,7 @@ impl<'a> Parser<'a> {
             item_type = self.if_next(Colon, Self::parse_type)?;
         }
 
-        let guard_clause = if matches!(self.peek().token_type, If | Unless) {
+        let guard_clause = if matches!(self.peek(), If | Unless) {
             Some(self.if_condition()?)
         } else {
             None
@@ -1266,15 +1249,10 @@ impl<'a> Parser<'a> {
             self.consume(If)?;
             false
         };
-        let lexeme = self.previous().lexeme;
 
         let mut condition = self.expression()?;
         if invert_condition {
-            let not_token = Token {
-                token_type: TokenType::Not,
-                lexeme,
-            };
-            condition = ast::Expression::Unary(not_token, Box::new(condition));
+            condition = ast::Expression::Unary(Not, Box::new(condition));
         }
 
         return Ok(condition);
@@ -1299,7 +1277,7 @@ impl<'a> Parser<'a> {
         // [a, ...b, c]: name after splat is optional
         // (match_clause, _)
         // { match_clause = field_name, field }
-        Ok(match self.peek().token_type {
+        Ok(match self.peek() {
             LeftParen => {
                 self.next();
                 Des::Tuple(self.cs_list0(Self::match_clause, RightParen)?)
@@ -1332,9 +1310,9 @@ impl<'a> Parser<'a> {
     }
 
     // Assumes `Static Identifier` is already consumed
-    fn static_field(&mut self) -> Result<ast::StaticField<'a>> {
+    fn static_field(&mut self, name: &'a str) -> Result<ast::StaticField<'a>> {
         Ok(ast::StaticField {
-            name: ast::Identifier(self.previous()),
+            name: ast::Identifier(name),
             item_type: self.after(Colon)?.parse_type()?,
             value: self.after(Equals)?.expression()?,
         })
@@ -1348,7 +1326,7 @@ impl<'a> Parser<'a> {
     /// Parses an object type literal.
     /// Assumes "{" is already consumed
     fn object_type(&mut self) -> Result<Vec<ast::Field<'a>>> {
-        self.list0(Self::field, RightBrace)
+        self.list0(|p| p.field(p.identifier()?.0), RightBrace)
     }
 
     fn function_type(&mut self) -> Result<ast::FunctionType<'a>> {
@@ -1368,7 +1346,7 @@ impl<'a> Parser<'a> {
     fn match_arm(&mut self) -> Result<(ast::MatchClause<'a>, ast::Expression<'a>)> {
         let clause = self.match_clause()?;
         self.consume(MinusArrow)?;
-        let expr = if self.peek().token_type == LeftBrace {
+        let expr = if self.peek() == LeftBrace {
             ast::Expression::Block(self.function_body()?)
         } else {
             self.expression()?
@@ -1400,19 +1378,20 @@ pub enum Warning {
 }
 
 #[derive(Clone, Debug)]
-pub enum Error {
+pub enum Error<'a> {
     /// It's actually okay when this happens
     None,
     NumberTooLarge,
-    UnexpectedToken(TokenType, TokenType),
-    UnexpectedInContext(&'static str, TokenType),
-    InvalidLeftValue(TokenType),
+    UnexpectedToken(Token<'a>, Token<'a>),
+    UnexpectedInContext(&'static str, Token<'a>),
+    InvalidLeftValue(Token<'a>),
     InvalidMatchClause,
     Other(std::string::String),
     ExpectedFunctionCall,
+    ExpectedIdentifier(Token<'a>),
 }
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<'a, T> = std::result::Result<T, Error<'a>>;
 
 // #[cfg(test)]
 // mod tests {
